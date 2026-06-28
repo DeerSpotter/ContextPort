@@ -22,6 +22,7 @@ The upstream release IPA should not be treated as trusted unless that exact IPA 
 - Supabase Auth test flow
 - Supabase memory dashboard
 - Supabase memory save/search management UI
+- Virtual MCP memory prototype with approval based save_context_after_approval flow
 - Temporary repo context pack generator while MCP memory is built
 - Optional local context pack UI for targeted file selection
 - Copy context for ChatGPT workflow
@@ -40,6 +41,8 @@ The public app does not hardcode a developer-owned Supabase project. Each user s
 
 A later phase documents a multi cloud file context layer. That idea keeps large files and archives outside the GPT sandbox, routes uploads into user connected cloud storage, and exposes files to GPT through scoped context links and backend tools.
 
+Phase 5 introduces a virtual MCP memory layer inside the app. It uses the same tool name and contract planned for the real connector, while routing the approved write through the existing Supabase memory backend.
+
 Start here:
 
 - [Project goals](docs/PROJECT_GOALS.md)
@@ -51,6 +54,7 @@ Start here:
 - [Context pack UI guide](docs/CONTEXT_PACK_UI_GUIDE.md)
 - [Copy context for ChatGPT](docs/COPY_CONTEXT_FOR_CHATGPT.md)
 - [Phase 4B multi cloud file context](docs/PHASE_4B_MULTI_CLOUD_FILE_CONTEXT.md)
+- [Phase 5 virtual MCP memory](docs/PHASE_5_VIRTUAL_MCP_MEMORY.md)
 - [Onboarding options](docs/ONBOARDING_OPTIONS.md)
 - [Auth login and redirect setup](docs/AUTH_LOGIN_REDIRECT_SETUP.md)
 - [Connector assisted setup](docs/CONNECTOR_ASSISTED_SETUP.md)
