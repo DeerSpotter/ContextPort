@@ -16,35 +16,55 @@ public enum SupabaseMemoryClientError: Error, LocalizedError {
 
 public actor SupabaseMemoryClient {
     private let functionURL: URL
+    private let publishableKey: String
     private let bearerTokenProvider: @Sendable () async throws -> String
     private let session: URLSession
-    private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
         functionURL: URL,
+        publishableKey: String,
         bearerTokenProvider: @escaping @Sendable () async throws -> String,
         session: URLSession = .shared
     ) {
         self.functionURL = functionURL
+        self.publishableKey = publishableKey
         self.bearerTokenProvider = bearerTokenProvider
         self.session = session
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .useDefaultKeys
-        self.encoder = encoder
-
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+
+            let fractionalFormatter = ISO8601DateFormatter()
+            fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractionalFormatter.date(from: value) {
+                return date
+            }
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) {
+                return date
+            }
+
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO8601 date: \(value)")
+        }
         self.decoder = decoder
     }
 
     public func createProject(name: String, description: String? = nil) async throws -> MemoryProject {
-        let response: CreateProjectResponse = try await post([
+        var body: [String: Any] = [
             "action": "create_project",
-            "name": name,
-            "content": description as Any
-        ])
+            "name": name
+        ]
+
+        if let description, !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["content"] = description
+        }
+
+        let response: CreateProjectResponse = try await post(body)
         return response.project
     }
 
@@ -135,11 +155,9 @@ public actor SupabaseMemoryClient {
         var request = URLRequest(url: functionURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(publishableKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body.compactMapValues { value in
-            if value is NSNull { return nil }
-            return value
-        })
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

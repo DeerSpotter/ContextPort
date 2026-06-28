@@ -1,0 +1,115 @@
+name: Build Source iOS 16 IPA
+
+on:
+  push:
+    branches:
+      - main
+      - phase2/supabase-memory-ui
+    paths:
+      - "ChatGPTWebView/**"
+      - "AppMemory/**"
+      - "project.yml"
+      - ".github/workflows/build-source-ios16-ipa.yml"
+  pull_request:
+    paths:
+      - "ChatGPTWebView/**"
+      - "AppMemory/**"
+      - "project.yml"
+      - ".github/workflows/build-source-ios16-ipa.yml"
+  workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: "Minimum iOS deployment target"
+        required: false
+        default: "16.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build-source-ios16-ipa:
+    name: Build source controlled iOS 16 unsigned IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          test -f ChatGPTWebView.xcodeproj/project.pbxproj
+
+      - name: Archive app without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          DEPLOYMENT_TARGET="${{ github.event.inputs.deployment_target || '16.0' }}"
+
+          xcodebuild clean archive \
+            -project ChatGPTWebView.xcodeproj \
+            -scheme ChatGPTWebView \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/ChatGPTWebView.xcarchive" \
+            IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER=""
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/ChatGPTWebView.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1 || true)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "Archive completed but no .app was found under Products/Applications." >&2
+            exit 22
+          fi
+
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          (cd build && zip -qry ChatGPT-WebView-phase2-ios16-unsigned.ipa Payload)
+          ls -lh build/ChatGPT-WebView-phase2-ios16-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatGPT-WebView-phase2-ios16-unsigned-ipa
+          path: build/ChatGPT-WebView-phase2-ios16-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload generated Xcode project artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatGPT-WebView-phase2-generated-xcode-project
+          path: |
+            ChatGPTWebView.xcodeproj
+            project.yml
+            ChatGPTWebView
+            AppMemory
+          if-no-files-found: error
+          retention-days: 14

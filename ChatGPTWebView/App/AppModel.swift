@@ -1,0 +1,343 @@
+import Foundation
+import SwiftUI
+
+@MainActor
+final class AppModel: ObservableObject {
+    @Published private(set) var isAuthenticated = false
+    @Published private(set) var authEmail: String?
+    @Published var statusMessage = ""
+    @Published var projects: [MemoryProject] = []
+    @Published var selectedProject: MemoryProject?
+    @Published var searchResults: [MemoryItem] = []
+    @Published var diagnostics: [SupabaseDiagnosticResult] = []
+    @Published var isBusy = false
+
+    let configStore = SupabaseConfigStore()
+
+    private let callbackScheme = "chatgptwebview"
+    private let callbackURL = URL(string: "chatgptwebview://auth-callback")!
+    private let tokenStore = TokenStore()
+    private let oauthSession = OAuthWebAuthenticationSession()
+    private let diagnosticsClient = SupabaseDiagnosticsClient()
+    private let defaultProjectName = "ChatGPT-WebView"
+    private let defaultProjectDescription = "Default memory project for ChatGPT WebView."
+
+    func restoreSession() async {
+        guard self.configStore.config != nil else {
+            self.statusMessage = "Add your Supabase project URL and publishable key."
+            return
+        }
+
+        guard let session = self.tokenStore.load() else {
+            self.isAuthenticated = false
+            self.authEmail = nil
+            return
+        }
+
+        self.isAuthenticated = true
+        self.authEmail = session.email
+        self.statusMessage = "Signed in as \(session.email ?? "stored session")"
+        await self.refreshProjects(autoCreateDefault: true)
+    }
+
+    func handleOpenURL(_ url: URL) {
+        guard url.scheme?.lowercased() == callbackScheme else {
+            return
+        }
+
+        guard url.host?.lowercased() == "setup" else {
+            return
+        }
+
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let projectURLText = items.first(where: { $0.name == "url" })?.value ?? ""
+        let publishableKey = items.first(where: { $0.name == "key" })?.value ?? ""
+
+        self.saveConfig(projectURLText: projectURLText, publishableKey: publishableKey)
+        self.statusMessage = "Imported Supabase setup link. Run diagnostics, then log in."
+    }
+
+    func saveConfig(projectURLText: String, publishableKey: String) {
+        do {
+            try self.configStore.save(projectURLText: projectURLText, publishableKey: publishableKey)
+            self.signOut(clearConfig: false)
+            self.statusMessage = "Supabase project saved. Now log in."
+        } catch {
+            self.statusMessage = error.localizedDescription
+        }
+    }
+
+    func clearConfig() {
+        self.signOut(clearConfig: true)
+        self.diagnostics = []
+        self.statusMessage = "Supabase project config cleared."
+    }
+
+    func runDiagnostics(projectURLText: String, publishableKey: String) async {
+        self.isBusy = true
+        self.statusMessage = "Running Supabase diagnostics..."
+        defer { self.isBusy = false }
+
+        self.diagnostics = await diagnosticsClient.run(
+            projectURLText: projectURLText,
+            publishableKey: publishableKey
+        )
+
+        let failed = self.diagnostics.filter { $0.status == .fail }.count
+        let warnings = self.diagnostics.filter { $0.status == .warning }.count
+
+        if failed > 0 {
+            self.statusMessage = "Diagnostics found \(failed) failure(s)."
+        } else if warnings > 0 {
+            self.statusMessage = "Diagnostics passed with \(warnings) warning(s)."
+        } else {
+            self.statusMessage = "Diagnostics passed."
+        }
+    }
+
+    func runSavedDiagnostics() async {
+        guard let config = self.configStore.config else {
+            self.statusMessage = SupabaseConfigError.noConfig.localizedDescription
+            return
+        }
+
+        await self.runDiagnostics(
+            projectURLText: config.projectURL.absoluteString,
+            publishableKey: config.publishableKey
+        )
+    }
+
+    func setupDeepLink(projectURLText: String, publishableKey: String) -> String? {
+        guard let config = try? SupabaseConfigValidation.normalize(projectURLText: projectURLText, publishableKey: publishableKey) else {
+            return nil
+        }
+
+        var components = URLComponents()
+        components.scheme = callbackScheme
+        components.host = "setup"
+        components.queryItems = [
+            URLQueryItem(name: "url", value: config.projectURL.absoluteString),
+            URLQueryItem(name: "key", value: config.publishableKey)
+        ]
+
+        return components.url?.absoluteString
+    }
+
+    func signIn(email: String, password: String) async {
+        await runBusy("Signing in...") { [self] in
+            let session = try await self.authClient().signIn(email: email, password: password)
+            self.applySignedInSession(session, message: "Signed in.")
+            try await self.loadProjects(autoCreateDefault: true)
+        }
+    }
+
+    func signUp(email: String, password: String) async {
+        await runBusy("Creating account...") { [self] in
+            let session = try await self.authClient().signUp(email: email, password: password)
+            self.applySignedInSession(session, message: "Account created and signed in.")
+            try await self.loadProjects(autoCreateDefault: true)
+        }
+    }
+
+    func signInWithOAuth(provider: SupabaseOAuthProvider) async {
+        await runBusy("Opening \(provider.title) login...") { [self] in
+            let authorizationURL = try await self.authClient().oauthAuthorizationURL(
+                provider: provider,
+                redirectTo: self.callbackURL
+            )
+
+            let callbackURL = try await self.oauthSession.start(
+                url: authorizationURL,
+                callbackScheme: self.callbackScheme
+            )
+
+            let session = try await self.authClient().session(fromOAuthCallback: callbackURL)
+            self.applySignedInSession(session, message: "Logged in with \(provider.title).")
+            try await self.loadProjects(autoCreateDefault: true)
+        }
+    }
+
+    func signOut(clearConfig: Bool = false) {
+        self.tokenStore.clear()
+        self.isAuthenticated = false
+        self.authEmail = nil
+        self.projects = []
+        self.selectedProject = nil
+        self.searchResults = []
+        if clearConfig {
+            self.configStore.clear()
+        }
+        self.statusMessage = "Logged out."
+    }
+
+    func refreshProjects(autoCreateDefault: Bool = false) async {
+        await runBusy(autoCreateDefault ? "Loading memory project..." : "Loading projects...") { [self] in
+            try await self.loadProjects(autoCreateDefault: autoCreateDefault)
+        }
+    }
+
+    func createProject(name: String, description: String) async {
+        await runBusy("Creating project...") { [self] in
+            let project = try await self.memoryClient().createProject(name: name, description: description)
+            self.selectedProject = project
+            try await self.loadProjects(autoCreateDefault: false)
+            self.statusMessage = "Created project: \(project.name)"
+        }
+    }
+
+    func saveMemory(title: String, content: String, tags: String) async {
+        guard let selectedProject = self.selectedProject else {
+            self.statusMessage = "Create or select a project first."
+            return
+        }
+
+        await runBusy("Saving memory...") { [self] in
+            let tagList = tags
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            _ = try await self.memoryClient().saveMemory(
+                projectID: selectedProject.id,
+                title: title,
+                content: content,
+                tags: tagList
+            )
+            self.statusMessage = "Saved memory."
+        }
+    }
+
+    func searchMemory(query: String) async {
+        guard let selectedProject = self.selectedProject else {
+            self.statusMessage = "Create or select a project first."
+            return
+        }
+
+        await runBusy("Searching memory...") { [self] in
+            self.searchResults = try await self.memoryClient().searchMemory(projectID: selectedProject.id, query: query)
+            self.statusMessage = "Found \(self.searchResults.count) result(s)."
+        }
+    }
+
+    func formattedContextForChatGPT(searchQuery: String) -> String {
+        let projectName = selectedProject?.name ?? "Unknown project"
+        let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let queryText = trimmedQuery.isEmpty ? "No search query provided" : trimmedQuery
+
+        guard !searchResults.isEmpty else {
+            return """
+            I searched my saved project memory for: \(queryText)
+
+            No saved memory results were found.
+            """
+        }
+
+        let formattedItems = searchResults.prefix(8).enumerated().map { index, item in
+            let tags = item.tags.isEmpty ? "none" : item.tags.joined(separator: ", ")
+            return """
+            \(index + 1). \(item.title)
+            Content: \(item.content)
+            Tags: \(tags)
+            """
+        }.joined(separator: "\n\n")
+
+        return """
+        Use the following saved project memory as background context for this conversation. Treat it as user provided context from previous work. Use it when relevant, but do not assume it overrides my current instructions.
+
+        Project: \(projectName)
+        Memory search query: \(queryText)
+
+        Saved memory results:
+        \(formattedItems)
+
+        Please continue from this context and ask if anything is unclear.
+        """
+    }
+
+    private func loadProjects(autoCreateDefault: Bool) async throws {
+        var loaded = try await self.memoryClient().listProjects()
+
+        if loaded.isEmpty && autoCreateDefault {
+            let project = try await self.memoryClient().createProject(
+                name: defaultProjectName,
+                description: defaultProjectDescription
+            )
+            loaded = [project]
+            self.projects = loaded
+            self.selectedProject = project
+            self.statusMessage = "Created and selected default memory project."
+            return
+        }
+
+        self.projects = loaded
+
+        if let selectedProject,
+           loaded.contains(where: { $0.id == selectedProject.id }) {
+            self.statusMessage = "Loaded \(loaded.count) memory project(s)."
+            return
+        }
+
+        self.selectedProject = loaded.first
+
+        if let selectedProject = self.selectedProject {
+            self.statusMessage = "Selected memory project: \(selectedProject.name)."
+        } else {
+            self.statusMessage = "No memory projects yet."
+        }
+    }
+
+    private func authClient() throws -> SupabaseAuthClient {
+        guard let config = self.configStore.config else {
+            throw SupabaseConfigError.noConfig
+        }
+        return SupabaseAuthClient(projectURL: config.projectURL, publishableKey: config.publishableKey)
+    }
+
+    private func memoryClient() throws -> SupabaseMemoryClient {
+        guard let config = self.configStore.config else {
+            throw SupabaseConfigError.noConfig
+        }
+        return SupabaseMemoryClient(
+            functionURL: config.memoryFunctionURL,
+            publishableKey: config.publishableKey,
+            bearerTokenProvider: { [weak self] in
+                guard let self else { throw SupabaseAuthClientError.noSession }
+                return try await self.validAccessToken()
+            }
+        )
+    }
+
+    private func applySignedInSession(_ session: SupabaseSession, message: String) {
+        self.tokenStore.save(session)
+        self.isAuthenticated = true
+        self.authEmail = session.email
+        self.statusMessage = message
+    }
+
+    private func validAccessToken() async throws -> String {
+        guard var session = self.tokenStore.load() else {
+            throw SupabaseAuthClientError.noSession
+        }
+
+        if session.expiresAt > Date().addingTimeInterval(60) {
+            return session.accessToken
+        }
+
+        let refreshed = try await self.authClient().refreshSession(refreshToken: session.refreshToken)
+        session = refreshed
+        self.tokenStore.save(session)
+        return refreshed.accessToken
+    }
+
+    private func runBusy(_ message: String, operation: @escaping () async throws -> Void) async {
+        self.isBusy = true
+        self.statusMessage = message
+        defer { self.isBusy = false }
+
+        do {
+            try await operation()
+        } catch {
+            self.statusMessage = error.localizedDescription
+        }
+    }
+}

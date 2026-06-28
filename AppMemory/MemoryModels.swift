@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MemoryProject: Codable, Identifiable, Sendable {
+public struct MemoryProject: Codable, Identifiable, Sendable, Hashable {
     public let id: UUID
     public let name: String
     public let description: String?
@@ -10,7 +10,7 @@ public struct MemoryProject: Codable, Identifiable, Sendable {
     public let updated_at: Date?
 }
 
-public struct MemoryItem: Codable, Identifiable, Sendable {
+public struct MemoryItem: Codable, Identifiable, Sendable, Hashable {
     public let id: UUID
     public let project_id: UUID
     public let title: String
@@ -22,7 +22,7 @@ public struct MemoryItem: Codable, Identifiable, Sendable {
     public let updated_at: Date?
 }
 
-public struct MemorySession: Codable, Identifiable, Sendable {
+public struct MemorySession: Codable, Identifiable, Sendable, Hashable {
     public let id: UUID
     public let project_id: UUID
     public let title: String
@@ -32,7 +32,7 @@ public struct MemorySession: Codable, Identifiable, Sendable {
     public let ended_at: Date?
 }
 
-public struct MemorySessionSummary: Codable, Identifiable, Sendable {
+public struct MemorySessionSummary: Codable, Identifiable, Sendable, Hashable {
     public let id: UUID
     public let project_id: UUID
     public let session_id: UUID?
@@ -45,7 +45,7 @@ public struct MemorySessionSummary: Codable, Identifiable, Sendable {
     public let created_at: Date?
 }
 
-public struct MemoryArtifact: Codable, Identifiable, Sendable {
+public struct MemoryArtifact: Codable, Identifiable, Sendable, Hashable {
     public let id: UUID
     public let name: String
     public let artifact_type: String
@@ -54,7 +54,7 @@ public struct MemoryArtifact: Codable, Identifiable, Sendable {
     public let created_at: Date?
 }
 
-public struct ProjectContext: Codable, Sendable {
+public struct ProjectContext: Codable, Sendable, Hashable {
     public let project: MemoryProject
     public let summaries: [MemorySessionSummary]
     public let memories: [MemoryItem]
