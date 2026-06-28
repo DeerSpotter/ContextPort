@@ -110,6 +110,12 @@ The WebView now:
 - handles `targetFrame == nil` popup navigation by loading the trusted OAuth URL into the same WebView
 - still rejects non HTTPS pages and arbitrary unrelated hosts
 
+## External link handling
+
+The WebView keeps trusted ChatGPT, OpenAI, and OAuth domains inside the app. Normal outbound links from ChatGPT answers are no longer silently blocked.
+
+External links now open outside the app through iOS using `UIApplication.shared.open`. This keeps the ChatGPT WebView constrained while still allowing normal links, email links, phone links, and text message links to work.
+
 ## WebView lifecycle handling
 
 The ChatGPT tab now uses a persistent `ChatGPTWebViewStore` with a single `WKWebView` instance. This prevents the OAuth or MFA page from reloading when SwiftUI redraws the tab or when the app backgrounds and resumes.
