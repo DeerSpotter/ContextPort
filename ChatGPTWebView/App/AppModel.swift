@@ -11,7 +11,11 @@ final class AppModel: ObservableObject {
     @Published var searchResults: [MemoryItem] = []
     @Published var isBusy = false
 
+    private let callbackScheme = "chatgptwebview"
+    private let callbackURL = URL(string: "chatgptwebview://auth-callback")!
     private let tokenStore = TokenStore()
+    private let oauthSession = OAuthWebAuthenticationSession()
+
     private lazy var authClient = SupabaseAuthClient(
         projectURL: SupabaseConfig.projectURL,
         publishableKey: SupabaseConfig.publishableKey
@@ -42,10 +46,7 @@ final class AppModel: ObservableObject {
     func signIn(email: String, password: String) async {
         await runBusy("Signing in...") { [self] in
             let session = try await self.authClient.signIn(email: email, password: password)
-            self.tokenStore.save(session)
-            self.isAuthenticated = true
-            self.authEmail = session.email
-            self.statusMessage = "Signed in."
+            self.applySignedInSession(session, message: "Signed in.")
             await self.refreshProjects()
         }
     }
@@ -53,10 +54,25 @@ final class AppModel: ObservableObject {
     func signUp(email: String, password: String) async {
         await runBusy("Creating account...") { [self] in
             let session = try await self.authClient.signUp(email: email, password: password)
-            self.tokenStore.save(session)
-            self.isAuthenticated = true
-            self.authEmail = session.email
-            self.statusMessage = "Account created and signed in."
+            self.applySignedInSession(session, message: "Account created and signed in.")
+            await self.refreshProjects()
+        }
+    }
+
+    func signInWithOAuth(provider: SupabaseOAuthProvider) async {
+        await runBusy("Opening \(provider.title) sign in...") { [self] in
+            let authorizationURL = try await self.authClient.oauthAuthorizationURL(
+                provider: provider,
+                redirectTo: self.callbackURL
+            )
+
+            let callbackURL = try await self.oauthSession.start(
+                url: authorizationURL,
+                callbackScheme: self.callbackScheme
+            )
+
+            let session = try await self.authClient.session(fromOAuthCallback: callbackURL)
+            self.applySignedInSession(session, message: "Signed in with \(provider.title).")
             await self.refreshProjects()
         }
     }
@@ -123,6 +139,13 @@ final class AppModel: ObservableObject {
             self.searchResults = try await self.memoryClient.searchMemory(projectID: selectedProject.id, query: query)
             self.statusMessage = "Found \(self.searchResults.count) result(s)."
         }
+    }
+
+    private func applySignedInSession(_ session: SupabaseSession, message: String) {
+        self.tokenStore.save(session)
+        self.isAuthenticated = true
+        self.authEmail = session.email
+        self.statusMessage = message
     }
 
     private func validAccessToken() async throws -> String {
