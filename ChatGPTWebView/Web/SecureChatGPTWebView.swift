@@ -38,7 +38,24 @@ struct SecureChatGPTWebView: UIViewRepresentable {
             "chatgpt.com",
             "openai.com",
             "oaistatic.com",
-            "oaiusercontent.com"
+            "oaiusercontent.com",
+            "auth0.com",
+            "google.com",
+            "gstatic.com",
+            "googleusercontent.com",
+            "apple.com",
+            "icloud.com",
+            "microsoft.com",
+            "microsoftonline.com",
+            "live.com",
+            "msauth.net"
+        ]
+
+        private let allowedSchemes = [
+            "https",
+            "about",
+            "blob",
+            "data"
         ]
 
         func webView(_ webView: WKWebView,
@@ -52,12 +69,26 @@ struct SecureChatGPTWebView: UIViewRepresentable {
             decisionHandler(isAllowed(url: url) ? .allow : .cancel)
         }
 
+        func webView(_ webView: WKWebView,
+                     createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            guard navigationAction.targetFrame == nil,
+                  let url = navigationAction.request.url,
+                  isAllowed(url: url) else {
+                return nil
+            }
+
+            webView.load(URLRequest(url: url))
+            return nil
+        }
+
         private func isAllowed(url: URL) -> Bool {
-            guard let scheme = url.scheme?.lowercased() else {
+            guard let scheme = url.scheme?.lowercased(), allowedSchemes.contains(scheme) else {
                 return false
             }
 
-            if scheme == "about" || scheme == "blob" {
+            if scheme == "about" || scheme == "blob" || scheme == "data" {
                 return true
             }
 
