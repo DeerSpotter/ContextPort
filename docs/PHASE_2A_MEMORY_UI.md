@@ -24,6 +24,7 @@ This phase proves that the app can authenticate to Supabase, call the JWT protec
 - It does not let ChatGPT web automatically read Supabase memory.
 - It does not inject JavaScript into `chatgpt.com`.
 - It does not include any Supabase secret or service role key.
+- It does not reuse ChatGPT connector authentication tokens. Those belong to the ChatGPT platform session and are not exposed to the external IPA.
 
 ## App structure
 
@@ -48,6 +49,37 @@ User opens Memory tab
   -> token is stored in iOS Keychain
   -> app calls /functions/v1/memory with Authorization: Bearer <user JWT>
   -> Supabase RLS scopes rows to owner_id
+```
+
+## Supabase social OAuth login
+
+The Memory login screen now supports Supabase OAuth buttons for:
+
+- GitHub
+- Google
+- Apple
+- Microsoft/Azure
+
+The app opens the provider through `ASWebAuthenticationSession` and returns through this custom callback URL:
+
+```text
+chatgptwebview://auth-callback
+```
+
+Required Supabase project setup:
+
+1. Enable the provider under Supabase Auth providers.
+2. Add each provider client ID and secret in Supabase.
+3. Add this redirect URL under Supabase Auth URL Configuration:
+
+```text
+chatgptwebview://auth-callback
+```
+
+Provider developer console callback URL:
+
+```text
+https://skejcbgrzlzgyjdjglrk.supabase.co/auth/v1/callback
 ```
 
 ## ChatGPT WebView OAuth handling
