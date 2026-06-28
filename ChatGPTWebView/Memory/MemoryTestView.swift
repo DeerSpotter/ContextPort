@@ -271,7 +271,13 @@ private struct MemoryDashboardCard: View {
 private struct MemoryCard<Content: View>: View {
     let title: String
     let systemImage: String
-    @ViewBuilder let content: Content
+    let content: () -> Content
+
+    init(title: String, systemImage: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -282,7 +288,7 @@ private struct MemoryCard<Content: View>: View {
                     .font(.headline)
             }
 
-            content
+            content()
         }
         .padding(16)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
