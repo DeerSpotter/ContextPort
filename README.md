@@ -14,6 +14,7 @@ The upstream release IPA should not be treated as trusted unless that exact IPA 
 - Safari 16+ User-Agent spoofing
 - Mic input (speech-to-text)
 - Dark mode support
+- ChatGPT tab stop button for quickly stopping current WebView activity
 - ChatGPT tab refresh button for reloading a stale or frozen WebView session
 - Bring your own Supabase project setup
 - Supabase setup diagnostics
