@@ -1,8 +1,10 @@
 import SwiftUI
 
 struct ChatGPTTabView: View {
+    @StateObject private var webViewStore = ChatGPTWebViewStore()
+
     var body: some View {
-        SecureChatGPTWebView(url: URL(string: "https://chatgpt.com/")!)
+        SecureChatGPTWebView(store: webViewStore)
             .ignoresSafeArea(.keyboard, edges: .bottom)
     }
 }
