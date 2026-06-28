@@ -27,106 +27,106 @@ final class AppModel: ObservableObject {
     )
 
     func restoreSession() async {
-        guard let session = tokenStore.load() else {
-            isAuthenticated = false
-            authEmail = nil
+        guard let session = self.tokenStore.load() else {
+            self.isAuthenticated = false
+            self.authEmail = nil
             return
         }
 
-        isAuthenticated = true
-        authEmail = session.email
-        statusMessage = "Signed in as \(session.email ?? "stored session")"
-        await refreshProjects()
+        self.isAuthenticated = true
+        self.authEmail = session.email
+        self.statusMessage = "Signed in as \(session.email ?? "stored session")"
+        await self.refreshProjects()
     }
 
     func signIn(email: String, password: String) async {
-        await runBusy("Signing in...") {
-            let session = try await authClient.signIn(email: email, password: password)
-            tokenStore.save(session)
-            isAuthenticated = true
-            authEmail = session.email
-            statusMessage = "Signed in."
-            await refreshProjects()
+        await runBusy("Signing in...") { [self] in
+            let session = try await self.authClient.signIn(email: email, password: password)
+            self.tokenStore.save(session)
+            self.isAuthenticated = true
+            self.authEmail = session.email
+            self.statusMessage = "Signed in."
+            await self.refreshProjects()
         }
     }
 
     func signUp(email: String, password: String) async {
-        await runBusy("Creating account...") {
-            let session = try await authClient.signUp(email: email, password: password)
-            tokenStore.save(session)
-            isAuthenticated = true
-            authEmail = session.email
-            statusMessage = "Account created and signed in."
-            await refreshProjects()
+        await runBusy("Creating account...") { [self] in
+            let session = try await self.authClient.signUp(email: email, password: password)
+            self.tokenStore.save(session)
+            self.isAuthenticated = true
+            self.authEmail = session.email
+            self.statusMessage = "Account created and signed in."
+            await self.refreshProjects()
         }
     }
 
     func signOut() {
-        tokenStore.clear()
-        isAuthenticated = false
-        authEmail = nil
-        projects = []
-        selectedProject = nil
-        searchResults = []
-        statusMessage = "Signed out."
+        self.tokenStore.clear()
+        self.isAuthenticated = false
+        self.authEmail = nil
+        self.projects = []
+        self.selectedProject = nil
+        self.searchResults = []
+        self.statusMessage = "Signed out."
     }
 
     func refreshProjects() async {
-        await runBusy("Loading projects...") {
-            let loaded = try await memoryClient.listProjects()
-            projects = loaded
-            if selectedProject == nil {
-                selectedProject = loaded.first
+        await runBusy("Loading projects...") { [self] in
+            let loaded = try await self.memoryClient.listProjects()
+            self.projects = loaded
+            if self.selectedProject == nil {
+                self.selectedProject = loaded.first
             }
-            statusMessage = loaded.isEmpty ? "No memory projects yet." : "Loaded \(loaded.count) memory project(s)."
+            self.statusMessage = loaded.isEmpty ? "No memory projects yet." : "Loaded \(loaded.count) memory project(s)."
         }
     }
 
     func createProject(name: String, description: String) async {
-        await runBusy("Creating project...") {
-            let project = try await memoryClient.createProject(name: name, description: description)
-            selectedProject = project
-            await refreshProjects()
-            statusMessage = "Created project: \(project.name)"
+        await runBusy("Creating project...") { [self] in
+            let project = try await self.memoryClient.createProject(name: name, description: description)
+            self.selectedProject = project
+            await self.refreshProjects()
+            self.statusMessage = "Created project: \(project.name)"
         }
     }
 
     func saveMemory(title: String, content: String, tags: String) async {
-        guard let selectedProject else {
-            statusMessage = "Create or select a project first."
+        guard let selectedProject = self.selectedProject else {
+            self.statusMessage = "Create or select a project first."
             return
         }
 
-        await runBusy("Saving memory...") {
+        await runBusy("Saving memory...") { [self] in
             let tagList = tags
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
 
-            _ = try await memoryClient.saveMemory(
+            _ = try await self.memoryClient.saveMemory(
                 projectID: selectedProject.id,
                 title: title,
                 content: content,
                 tags: tagList
             )
-            statusMessage = "Saved memory."
+            self.statusMessage = "Saved memory."
         }
     }
 
     func searchMemory(query: String) async {
-        guard let selectedProject else {
-            statusMessage = "Create or select a project first."
+        guard let selectedProject = self.selectedProject else {
+            self.statusMessage = "Create or select a project first."
             return
         }
 
-        await runBusy("Searching memory...") {
-            searchResults = try await memoryClient.searchMemory(projectID: selectedProject.id, query: query)
-            statusMessage = "Found \(searchResults.count) result(s)."
+        await runBusy("Searching memory...") { [self] in
+            self.searchResults = try await self.memoryClient.searchMemory(projectID: selectedProject.id, query: query)
+            self.statusMessage = "Found \(self.searchResults.count) result(s)."
         }
     }
 
     private func validAccessToken() async throws -> String {
-        guard var session = tokenStore.load() else {
+        guard var session = self.tokenStore.load() else {
             throw SupabaseAuthClientError.noSession
         }
 
@@ -134,21 +134,21 @@ final class AppModel: ObservableObject {
             return session.accessToken
         }
 
-        let refreshed = try await authClient.refreshSession(refreshToken: session.refreshToken)
+        let refreshed = try await self.authClient.refreshSession(refreshToken: session.refreshToken)
         session = refreshed
-        tokenStore.save(session)
+        self.tokenStore.save(session)
         return refreshed.accessToken
     }
 
     private func runBusy(_ message: String, operation: @escaping () async throws -> Void) async {
-        isBusy = true
-        statusMessage = message
-        defer { isBusy = false }
+        self.isBusy = true
+        self.statusMessage = message
+        defer { self.isBusy = false }
 
         do {
             try await operation()
         } catch {
-            statusMessage = error.localizedDescription
+            self.statusMessage = error.localizedDescription
         }
     }
 }
