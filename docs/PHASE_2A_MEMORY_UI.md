@@ -11,7 +11,7 @@ Phase 2A adds a source controlled SwiftUI app with:
 - bring your own Supabase setup screen
 - Supabase Auth screen
 - Keychain backed session storage
-- Memory Test screen
+- Memory dashboard first screen
 - automatic default memory project creation after login
 - project create/list flow
 - memory save/search flow
@@ -76,6 +76,31 @@ User opens Setup tab
   -> app calls /functions/v1/memory with Authorization: Bearer <user JWT>
   -> Supabase RLS scopes rows to owner_id inside that user's project
 ```
+
+## Memory tab layout
+
+The Memory tab keeps the `externaldrive.connected.to.line.below` tab icon because that visual identity is clear and memorable.
+
+The screen itself is dashboard first:
+
+```text
+Memory tab
+  -> dashboard card with account, selected project, backend, project count, result count, status
+  -> quick actions for Refresh and Copy Context
+  -> Search Memory card
+  -> Save Memory card
+  -> Project management card
+  -> Account and Setup card
+```
+
+This keeps the most common workflow near the top:
+
+1. confirm the selected memory project
+2. search for saved context
+3. copy context for ChatGPT
+4. save a new memory when needed
+
+Setup and account actions stay lower on the screen because the dedicated Setup tab already handles assisted configuration.
 
 ## Supabase social OAuth login
 
@@ -152,6 +177,8 @@ This prevents a new user from landing on `Selected: None` with Save/Search disab
 The ChatGPT tab now uses a persistent `ChatGPTWebViewStore` with a single `WKWebView` instance. This prevents the OAuth or MFA page from reloading when SwiftUI redraws the tab or when the app backgrounds and resumes.
 
 This can preserve the login page while the app is still alive in memory. If iOS fully terminates the app in the background, the page cannot be kept alive, but cookies and website data still use the default persistent WebKit data store.
+
+The ChatGPT tab also includes a small refresh control. If the WebView feels frozen after returning to the app, the user can reload the current ChatGPT session without restarting the app.
 
 ## Build artifact
 
