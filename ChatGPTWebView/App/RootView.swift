@@ -11,7 +11,9 @@ struct RootView: View {
                 }
 
             Group {
-                if appModel.isAuthenticated {
+                if appModel.configStore.config == nil {
+                    SupabaseSetupView()
+                } else if appModel.isAuthenticated {
                     MemoryTestView()
                 } else {
                     AuthView()
