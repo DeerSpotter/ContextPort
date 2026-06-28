@@ -2,17 +2,32 @@
 
 ## Goal
 
-Make the iOS app talk to the deployed Supabase memory backend.
+Make the iOS app talk to a user supplied Supabase memory backend.
 
 Phase 2A adds a source controlled SwiftUI app with:
 
 - trusted ChatGPT WebView tab
+- bring your own Supabase setup screen
 - Supabase Auth screen
 - Keychain backed session storage
 - Memory Test screen
 - project create/list flow
 - memory save/search flow
 - unsigned IPA build from repository source
+
+## Architecture decision
+
+This app must not make one developer's Supabase database the shared backend for every installed copy of the IPA.
+
+The public app architecture is now:
+
+```text
+User installs app
+  -> user enters their own Supabase project URL and publishable key
+  -> user deploys the memory schema and Edge Function to that Supabase project
+  -> app logs into that user's Supabase Auth instance
+  -> app stores memory only in that user's Supabase project
+```
 
 ## What this proves
 
@@ -25,6 +40,7 @@ This phase proves that the app can authenticate to Supabase, call the JWT protec
 - It does not inject JavaScript into `chatgpt.com`.
 - It does not include any Supabase secret or service role key.
 - It does not reuse ChatGPT connector authentication tokens. Those belong to the ChatGPT platform session and are not exposed to the external IPA.
+- It does not hardcode the developer's Supabase project as the backend for all users.
 
 ## App structure
 
@@ -45,15 +61,16 @@ AppMemory/
 
 ```text
 User opens Memory tab
-  -> signs in with Supabase Auth
+  -> enters their Supabase project URL and publishable key
+  -> signs in with Supabase Auth for that project
   -> token is stored in iOS Keychain
   -> app calls /functions/v1/memory with Authorization: Bearer <user JWT>
-  -> Supabase RLS scopes rows to owner_id
+  -> Supabase RLS scopes rows to owner_id inside that user's project
 ```
 
 ## Supabase social OAuth login
 
-The Memory login screen now supports Supabase OAuth buttons for:
+The Memory login screen supports Supabase OAuth buttons for:
 
 - GitHub
 - Google
@@ -79,7 +96,7 @@ chatgptwebview://auth-callback
 Provider developer console callback URL:
 
 ```text
-https://skejcbgrzlzgyjdjglrk.supabase.co/auth/v1/callback
+https://<your-project-ref>.supabase.co/auth/v1/callback
 ```
 
 ## ChatGPT WebView OAuth handling
@@ -107,6 +124,8 @@ The Phase 2A build workflow uploads:
 
 ## Security notes
 
-The app includes only the Supabase project URL and publishable key. Supabase publishable keys are public client keys. They do not replace user authentication and do not bypass Row Level Security.
+The app stores only the user's Supabase project URL and publishable key. Supabase publishable keys are public client keys. They do not replace user authentication and do not bypass Row Level Security.
+
+Never paste a Supabase secret key or service role key into the app. Secret/service keys belong only in trusted server side code.
 
 The user access token is stored in the iOS Keychain.
