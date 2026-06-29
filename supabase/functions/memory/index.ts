@@ -10,6 +10,8 @@ type MemoryRequest = {
   title?: string;
   content?: string;
   summary?: string;
+  raw_context?: string;
+  source?: string;
   query?: string;
   tags?: string[];
   decisions?: string[];
@@ -26,6 +28,11 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
+
+const allowedSessionSources = new Set(["app", "chatgpt_web", "github", "document", "manual"]);
+const rawChunkSize = 7000;
+const memoryPreviewLimit = 60000;
+const summaryPreviewLimit = 1800;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -59,14 +66,37 @@ function clampImportance(value: unknown): number {
   return Math.min(Math.max(Math.round(value), 1), 5);
 }
 
-function uniqueTags(value: unknown): string[] {
+function uniqueTags(value: unknown, requiredTags: string[] = []): string[] {
   const tags = asStringArray(value).map((tag) => tag.toLowerCase());
-  for (const required of ["mcp", "approved-save"]) {
+  for (const required of requiredTags) {
     if (!tags.includes(required)) {
       tags.push(required);
     }
   }
   return [...new Set(tags)].slice(0, 12);
+}
+
+function normalizeSessionSource(value: unknown): string {
+  if (typeof value !== "string") {
+    return "chatgpt_web";
+  }
+  const source = value.trim().toLowerCase();
+  return allowedSessionSources.has(source) ? source : "chatgpt_web";
+}
+
+function truncateText(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit)}\n\n[truncated; full context stored in memory_messages chunks]`;
+}
+
+function chunkText(value: string, chunkSize = rawChunkSize): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += chunkSize) {
+    chunks.push(value.slice(index, index + chunkSize));
+  }
+  return chunks.length > 0 ? chunks : [value];
 }
 
 function appendSection(sections: string[], title: string, values: string[]) {
@@ -86,6 +116,32 @@ function approvedContextContent(body: MemoryRequest, importance: number): string
   return sections.join("\n\n");
 }
 
+function importedContextSummary(title: string, rawContext: string, source: string, chunkCount: number): string {
+  const preview = truncateText(rawContext, summaryPreviewLimit);
+  return [
+    `Imported approved context for: ${title}`,
+    `Source: ${source}`,
+    `Raw context length: ${rawContext.length} characters`,
+    `Stored chunks: ${chunkCount}`,
+    "",
+    "Preview:",
+    preview
+  ].join("\n");
+}
+
+function importedMemoryContent(rawContext: string, source: string, chunkCount: number, importance: number): string {
+  return [
+    "Imported session context approved by the user.",
+    `Source: ${source}`,
+    `Stored chunks: ${chunkCount}`,
+    `Importance: ${importance}/5`,
+    "Source: mcp.ingest_context_after_approval",
+    "",
+    "Context:",
+    truncateText(rawContext, memoryPreviewLimit)
+  ].join("\n");
+}
+
 async function insertToolEvent(
   supabase: ReturnType<typeof createClient>,
   body: MemoryRequest,
@@ -103,8 +159,10 @@ async function insertToolEvent(
       request: {
         title: body.title ?? null,
         tags: body.tags ?? [],
+        source: body.source ?? null,
         importance: body.importance ?? null,
         has_summary: typeof body.summary === "string" && body.summary.trim().length > 0,
+        raw_context_length: typeof body.raw_context === "string" ? body.raw_context.length : 0,
         decisions_count: asStringArray(body.decisions).length,
         open_tasks_count: asStringArray(body.open_tasks).length,
         files_discussed_count: asStringArray(body.files_discussed).length,
@@ -230,7 +288,7 @@ Deno.serve(async (req: Request) => {
         const title = requireString(body.title, "title");
         const summary = requireString(body.summary ?? body.content, "summary");
         const importance = clampImportance(body.importance);
-        const tags = uniqueTags(body.tags);
+        const tags = uniqueTags(body.tags, ["mcp", "approved-save"]);
         const content = approvedContextContent(body, importance);
         const metadata = {
           ...(body.metadata ?? {}),
@@ -285,6 +343,122 @@ Deno.serve(async (req: Request) => {
 
         return jsonResponse({
           ...response,
+          memory,
+          session_summary: sessionSummary,
+          tool_event: toolEvent
+        });
+      }
+
+      case "ingest_context_after_approval": {
+        const project_id = requireString(body.project_id, "project_id");
+        const title = requireString(body.title, "title");
+        const rawContext = requireString(body.raw_context ?? body.content, "raw_context");
+        const source = normalizeSessionSource(body.source);
+        const importance = clampImportance(body.importance);
+        const tags = uniqueTags(body.tags, ["session-import", "approved-import"]);
+        const chunks = chunkText(rawContext);
+        const metadata = {
+          ...(body.metadata ?? {}),
+          approved: true,
+          source,
+          tool_name: "ingest_context_after_approval",
+          raw_context_length: rawContext.length,
+          chunk_count: chunks.length
+        };
+
+        const { data: session, error: sessionError } = await supabase
+          .from("memory_sessions")
+          .insert({
+            project_id,
+            title,
+            source,
+            metadata
+          })
+          .select("id,project_id,title,source,external_ref,started_at,ended_at")
+          .single();
+
+        if (sessionError) throw sessionError;
+
+        const messageRows = chunks.map((chunk, index) => ({
+          project_id,
+          session_id: session.id,
+          role: "note",
+          content: chunk,
+          token_estimate: Math.ceil(chunk.length / 4),
+          metadata: {
+            chunk_index: index,
+            chunk_count: chunks.length,
+            source,
+            tool_name: "ingest_context_after_approval"
+          }
+        }));
+
+        const { data: messages, error: messagesError } = await supabase
+          .from("memory_messages")
+          .insert(messageRows)
+          .select("id");
+
+        if (messagesError) throw messagesError;
+
+        const memoryContent = importedMemoryContent(rawContext, source, chunks.length, importance);
+        const { data: memory, error: memoryError } = await supabase
+          .from("memory_items")
+          .insert({
+            project_id,
+            source_session_id: session.id,
+            title,
+            content: memoryContent,
+            tags,
+            importance,
+            is_pinned: body.is_pinned === true,
+            metadata
+          })
+          .select("id,project_id,title,content,tags,importance,is_pinned,created_at,updated_at")
+          .single();
+
+        if (memoryError) throw memoryError;
+
+        const summary = typeof body.summary === "string" && body.summary.trim().length > 0
+          ? body.summary.trim()
+          : importedContextSummary(title, rawContext, source, chunks.length);
+
+        const { data: sessionSummary, error: summaryError } = await supabase
+          .from("memory_session_summaries")
+          .insert({
+            project_id,
+            session_id: session.id,
+            summary,
+            decisions: asStringArray(body.decisions),
+            open_tasks: asStringArray(body.open_tasks),
+            files_discussed: asStringArray(body.files_discussed),
+            next_steps: asStringArray(body.next_steps),
+            importance,
+            metadata
+          })
+          .select("id,project_id,session_id,summary,decisions,open_tasks,files_discussed,next_steps,importance,created_at")
+          .single();
+
+        if (summaryError) throw summaryError;
+
+        const response = {
+          saved: true,
+          project_id,
+          session_id: session.id,
+          message_count: messages?.length ?? chunks.length,
+          memory_item_id: memory.id,
+          session_summary_id: sessionSummary.id,
+          tool_name: "ingest_context_after_approval"
+        };
+        const toolEvent = await insertToolEvent(
+          supabase,
+          { ...body, session_id: session.id },
+          "ok",
+          response
+        );
+
+        return jsonResponse({
+          ...response,
+          session,
           memory,
           session_summary: sessionSummary,
           tool_event: toolEvent
