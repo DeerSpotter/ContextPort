@@ -247,46 +247,41 @@ final class AppModel: ObservableObject {
     func runVirtualSaveContextAfterApproval(proposal: VirtualMCPSaveContextProposal) async {
         let fallbackProjectID = self.selectedProject?.id
         guard let projectID = proposal.projectID ?? fallbackProjectID else {
-            self.statusMessage = "Create or select a project before running the virtual MCP save tool."
+            self.statusMessage = "Create or select a project before running save_context_after_approval."
             return
         }
 
         guard !proposal.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            self.statusMessage = "Virtual MCP save requires a title."
+            self.statusMessage = "save_context_after_approval requires a title."
             return
         }
 
         guard !proposal.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            self.statusMessage = "Virtual MCP save requires a summary."
+            self.statusMessage = "save_context_after_approval requires a summary."
             return
         }
 
-        await runBusy("Running virtual MCP save_context_after_approval...") { [self] in
-            let content = VirtualMCPMemoryFormatter.memoryContent(from: proposal)
-            let tags = VirtualMCPMemoryFormatter.normalizedTags(from: proposal)
-            let memory = try await self.memoryClient().saveMemory(
+        await runBusy("Pushing approved context into Supabase...") { [self] in
+            let response = try await self.memoryClient().saveContextAfterApproval(
                 projectID: projectID,
                 title: proposal.title,
-                content: content,
-                tags: tags
-            )
-
-            let sessionSummary = try await self.memoryClient().saveSessionSummary(
-                projectID: projectID,
                 summary: proposal.summary,
                 decisions: proposal.decisions,
                 openTasks: proposal.openTasks,
                 filesDiscussed: proposal.filesDiscussed,
-                nextSteps: proposal.nextSteps
+                nextSteps: proposal.nextSteps,
+                tags: proposal.tags,
+                importance: proposal.importance
             )
 
             let result = VirtualMCPSaveContextResult(
-                saved: true,
-                projectID: projectID,
-                memoryItemID: memory.id,
-                sessionSummaryID: sessionSummary.id,
-                toolName: "save_context_after_approval",
-                message: "Virtual MCP save_context_after_approval saved approved context."
+                saved: response.saved,
+                projectID: response.project_id,
+                memoryItemID: response.memory_item_id,
+                sessionSummaryID: response.session_summary_id,
+                toolEventID: response.tool_event?.id,
+                toolName: response.tool_name,
+                message: "save_context_after_approval pushed approved context into Supabase."
             )
             self.lastVirtualMCPResult = result
             self.statusMessage = result.message
