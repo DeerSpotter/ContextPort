@@ -54,6 +54,15 @@ public struct MemoryArtifact: Codable, Identifiable, Sendable, Hashable {
     public let created_at: Date?
 }
 
+public struct MemoryToolEvent: Codable, Identifiable, Sendable, Hashable {
+    public let id: UUID
+    public let project_id: UUID?
+    public let session_id: UUID?
+    public let action: String
+    public let status: String
+    public let created_at: Date?
+}
+
 public struct ProjectContext: Codable, Sendable, Hashable {
     public let project: MemoryProject
     public let summaries: [MemorySessionSummary]
@@ -83,4 +92,15 @@ public struct SearchMemoryResponse: Codable, Sendable {
 
 public struct SaveSessionSummaryResponse: Codable, Sendable {
     public let session_summary: MemorySessionSummary
+}
+
+public struct SaveContextAfterApprovalResponse: Codable, Sendable {
+    public let saved: Bool
+    public let project_id: UUID
+    public let memory_item_id: UUID
+    public let session_summary_id: UUID
+    public let tool_name: String
+    public let memory: MemoryItem
+    public let session_summary: MemorySessionSummary
+    public let tool_event: MemoryToolEvent?
 }
