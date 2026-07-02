@@ -13,22 +13,22 @@ struct LocalMemoryVaultCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "externaldrive.badge.plus")
+                Image(systemName: "doc.richtext.fill")
                     .foregroundColor(.accentColor)
                 Text("Local Device Memory Vault")
                     .font(.headline)
             }
 
-            Text("Save context on this device first. This works without Supabase, without connector writes, and without deploying an Edge Function.")
+            Text("Save large context as a local PDF document first. Tap any saved title below to open the PDF-backed memory and start a new chat from it.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
 
             HStack(spacing: 10) {
-                LocalMemoryMetric(title: "Local entries", value: "\(appModel.localMemoryEntries.count)")
+                LocalMemoryMetric(title: "Local PDFs", value: "\(appModel.localMemoryEntries.count)")
                 LocalMemoryMetric(title: "Search results", value: "\(appModel.localMemorySearchResults.count)")
             }
 
-            TextField("Title", text: $title)
+            TextField("Chat title", text: $title)
                 .textFieldStyle(.roundedBorder)
 
             TextField("Source", text: $source)
@@ -43,7 +43,7 @@ struct LocalMemoryVaultCard: View {
 
             Stepper("Importance: \(importance)/5", value: $importance, in: 1...5)
 
-            Text("Session context")
+            Text("Full chat/context text")
                 .font(.caption.weight(.semibold))
                 .foregroundColor(.secondary)
 
@@ -79,7 +79,7 @@ struct LocalMemoryVaultCard: View {
                         importance: importance
                     )
                 } label: {
-                    Label("Save Local", systemImage: "externaldrive.badge.checkmark")
+                    Label("Save PDF", systemImage: "doc.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -87,7 +87,7 @@ struct LocalMemoryVaultCard: View {
             }
 
             HStack(spacing: 10) {
-                TextField("Search local memory", text: $searchQuery)
+                TextField("Search local PDF memory", text: $searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -125,24 +125,36 @@ struct LocalMemoryVaultCard: View {
             }
 
             if let result = appModel.lastLocalMemorySave {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(result.message)
-                        .font(.caption.weight(.semibold))
-                    LocalMemoryInfoRow(label: "Entry", value: result.entry.id.uuidString)
-                    LocalMemoryInfoRow(label: "Total local", value: "\(result.totalCount)")
+                NavigationLink {
+                    LocalMemoryDetailView(entry: result.entry)
+                        .environmentObject(appModel)
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(result.message)
+                            .font(.caption.weight(.semibold))
+                        LocalMemoryInfoRow(label: "Open saved PDF", value: result.entry.title)
+                        LocalMemoryInfoRow(label: "Total local", value: "\(result.totalCount)")
+                    }
+                    .padding(10)
+                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
                 }
-                .padding(10)
-                .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .buttonStyle(.plain)
             }
 
             if !appModel.localMemorySearchResults.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Local Results")
+                    Text("Saved Contexts")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.secondary)
 
-                    ForEach(appModel.localMemorySearchResults.prefix(5)) { entry in
-                        LocalMemoryResultRow(entry: entry)
+                    ForEach(appModel.localMemorySearchResults.prefix(10)) { entry in
+                        NavigationLink {
+                            LocalMemoryDetailView(entry: entry)
+                                .environmentObject(appModel)
+                        } label: {
+                            LocalMemoryResultRow(entry: entry)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -193,22 +205,37 @@ private struct LocalMemoryResultRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
+                Image(systemName: entry.pdfFilename == nil ? "doc.text" : "doc.richtext")
+                    .foregroundColor(.accentColor)
                 Text(entry.title)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(entry.importance)/5")
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
             }
 
             Text(entry.content)
                 .font(.caption)
-                .lineLimit(4)
+                .foregroundColor(.primary)
+                .lineLimit(3)
 
-            if !entry.tags.isEmpty {
-                Text(entry.tags.joined(separator: ", "))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+            HStack {
+                if let pdfFilename = entry.pdfFilename {
+                    Text(pdfFilename)
+                        .font(.caption2.monospaced())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if !entry.tags.isEmpty {
+                    Text(entry.tags.prefix(4).joined(separator: ", "))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
