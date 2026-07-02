@@ -7,9 +7,11 @@ struct PendingLocalMemoryPayload {
 
 enum PendingLocalMemoryAttachment {
     private static let entryIDKey = "PendingLocalMemoryAttachmentEntryID"
+    private static let selectedFilePathsKey = "PendingLocalMemoryAttachmentSelectedFilePaths"
 
-    static func mark(_ entry: LocalMemoryEntry) {
+    static func mark(_ entry: LocalMemoryEntry, fileURLs: [URL] = []) {
         UserDefaults.standard.set(entry.id.uuidString, forKey: entryIDKey)
+        UserDefaults.standard.set(fileURLs.map(\.path), forKey: selectedFilePathsKey)
     }
 
     static func consumePayload() -> PendingLocalMemoryPayload? {
@@ -18,7 +20,9 @@ enum PendingLocalMemoryAttachment {
             return nil
         }
 
+        let selectedPaths = UserDefaults.standard.stringArray(forKey: selectedFilePathsKey) ?? []
         UserDefaults.standard.removeObject(forKey: entryIDKey)
+        UserDefaults.standard.removeObject(forKey: selectedFilePathsKey)
 
         guard let entries = try? LocalMemoryStore().loadEntries(),
               let entry = entries.first(where: { $0.id == id }) else {
@@ -33,8 +37,12 @@ enum PendingLocalMemoryAttachment {
         \(markdown)
         """
 
+        let selectedURLs = selectedPaths
+            .map(URL.init(fileURLWithPath:))
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+
         return PendingLocalMemoryPayload(
-            fileURLs: store.fileURLs(for: entry),
+            fileURLs: selectedURLs.isEmpty ? store.fileURLs(for: entry) : selectedURLs,
             composerText: composerText
         )
     }
