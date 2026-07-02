@@ -139,7 +139,11 @@ final class LocalMemoryStore {
     }
 
     private func ensureDirectory() throws {
-        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
     }
 
     private func writeEntries(_ entries: [LocalMemoryEntry]) throws {
