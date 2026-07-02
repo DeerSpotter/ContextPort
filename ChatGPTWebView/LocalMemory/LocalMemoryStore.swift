@@ -43,6 +43,56 @@ final class LocalMemoryStore {
     }
 
     @discardableResult
+    func saveExportedPDF(
+        projectName: String,
+        title: String,
+        pdfData: Data,
+        sourceURL: String?
+    ) throws -> LocalMemorySaveResult {
+        var entries = try loadEntries()
+        let now = Date()
+        let id = UUID()
+        let pdfFilename = "\(id.uuidString).pdf"
+        let cleanedTitle = clean(title, fallback: "ChatGPT exported chat")
+        let source = clean(sourceURL ?? "chatgpt_web", fallback: "chatgpt_web")
+        let content = """
+        Full ChatGPT chat exported as a local PDF.
+
+        Title: \(cleanedTitle)
+        Source: \(source)
+        Local PDF: \(pdfFilename)
+        Saved: \(Self.isoFormatter.string(from: now))
+
+        Use the saved PDF as the authoritative context record for this chat.
+        """
+
+        let entry = LocalMemoryEntry(
+            id: id,
+            projectName: clean(projectName, fallback: "Local Project"),
+            title: cleanedTitle,
+            content: content,
+            source: source,
+            tags: normalizedTags(["chat-export", "chatgpt", "context"]),
+            importance: 5,
+            createdAt: now,
+            updatedAt: now,
+            pdfFilename: pdfFilename,
+            attachmentFilenames: []
+        )
+
+        try ensureDirectory()
+        try pdfData.write(to: pdfDirectoryURL.appendingPathComponent(pdfFilename), options: [.atomic])
+        entries.append(entry)
+        try writeEntries(entries.sorted(by: sortEntries))
+
+        return LocalMemorySaveResult(
+            entry: entry,
+            totalCount: entries.count,
+            message: "Exported chat PDF to local memory."
+        )
+    }
+
+    @discardableResult
     func saveEntry(
         projectName: String,
         title: String,
@@ -117,14 +167,13 @@ final class LocalMemoryStore {
 
     func startNewChatContext(for entry: LocalMemoryEntry) -> String {
         var lines: [String] = []
-        lines.append("Start a new chat using this saved local context. Treat it as user-provided project/session memory. Use it when relevant, but current instructions override older context.")
+        lines.append("Start a new chat using this saved local PDF context. Treat the saved PDF as the authoritative project/session memory. Use it when relevant, but current instructions override older context.")
         lines.append("")
-        lines.append("# Saved Context")
+        lines.append("# Saved PDF Context")
         lines.append("")
         lines.append("Title: \(entry.title)")
         lines.append("Project: \(entry.projectName)")
         lines.append("Source: \(entry.source)")
-        lines.append("Importance: \(entry.importance)/5")
         if let pdfFilename = entry.pdfFilename {
             lines.append("Local PDF: \(pdfFilename)")
         }
@@ -149,17 +198,17 @@ final class LocalMemoryStore {
             .prefix(limit)
 
         var lines: [String] = []
-        lines.append("# Local Device Memory Context")
+        lines.append("# Local PDF Memory Context")
         lines.append("")
         lines.append("Project: \(projectName.isEmpty ? "Local Project" : projectName)")
         lines.append("Generated: \(Self.isoFormatter.string(from: Date()))")
-        lines.append("Source: on-device local memory vault")
+        lines.append("Source: on-device local PDF memory vault")
         lines.append("")
-        lines.append("Use this as user-owned context for the next AI session. Treat newer, higher-importance entries as stronger signals, but current user instructions still override this context.")
+        lines.append("Use saved PDFs as the authoritative context records. Current user instructions still override older context.")
         lines.append("")
 
         if projectEntries.isEmpty {
-            lines.append("No local memory entries found for this project.")
+            lines.append("No local PDF memory entries found for this project.")
             return lines.joined(separator: "\n")
         }
 
@@ -169,7 +218,6 @@ final class LocalMemoryStore {
             lines.append("## \(index + 1). \(entry.title)")
             lines.append("")
             lines.append("- Source: \(entry.source)")
-            lines.append("- Importance: \(entry.importance)/5")
             lines.append("- Created: \(Self.isoFormatter.string(from: entry.createdAt))")
             if let pdfFilename = entry.pdfFilename {
                 lines.append("- Local PDF: \(pdfFilename)")
