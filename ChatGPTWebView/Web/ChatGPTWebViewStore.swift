@@ -53,6 +53,13 @@ final class ChatGPTWebViewStore: ObservableObject {
             webView.reload()
         }
     }
+
+    func startNewChat() {
+        if webView.isLoading {
+            webView.stopLoading()
+        }
+        webView.load(URLRequest(url: startURL))
+    }
 }
 
 final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
