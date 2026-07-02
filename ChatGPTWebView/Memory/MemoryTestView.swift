@@ -33,20 +33,24 @@ struct MemoryTestView: View {
                         providerText: providerText,
                         memoryCountText: "\(appModel.searchResults.count)",
                         projectCountText: "\(appModel.projects.count)",
+                        localCountText: "\(appModel.localMemoryEntries.count)",
                         isBusy: appModel.isBusy,
                         statusText: appModel.statusMessage.isEmpty ? "Ready." : appModel.statusMessage,
                         canCopyContext: !appModel.searchResults.isEmpty,
                         onRefresh: {
+                            appModel.reloadLocalMemory()
                             Task { await appModel.refreshProjects() }
                         },
                         onCopyContext: {
                             UIPasteboard.general.string = appModel.formattedContextForChatGPT(searchQuery: searchQuery)
-                            appModel.statusMessage = "Copied formatted memory context for ChatGPT."
+                            appModel.statusMessage = "Copied formatted Supabase memory context for ChatGPT."
                         }
                     )
 
-                    MemoryCard(title: "Search Memory", systemImage: "magnifyingglass") {
-                        Text("Find saved project memory first, then copy a compact context block into the ChatGPT tab.")
+                    LocalMemoryVaultCard()
+
+                    MemoryCard(title: "Search Supabase Memory", systemImage: "magnifyingglass") {
+                        Text("Find saved Supabase project memory, then copy a compact context block into the ChatGPT tab.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
 
@@ -67,7 +71,7 @@ struct MemoryTestView: View {
 
                             Button {
                                 UIPasteboard.general.string = appModel.formattedContextForChatGPT(searchQuery: searchQuery)
-                                appModel.statusMessage = "Copied formatted memory context for ChatGPT."
+                                appModel.statusMessage = "Copied formatted Supabase memory context for ChatGPT."
                             } label: {
                                 Label("Copy", systemImage: "doc.on.doc")
                                     .frame(maxWidth: .infinity)
@@ -77,10 +81,6 @@ struct MemoryTestView: View {
                         }
 
                         if !appModel.searchResults.isEmpty {
-                            Text("Paste the copied context into the ChatGPT tab to continue with this project memory.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
                             VStack(spacing: 10) {
                                 ForEach(appModel.searchResults) { item in
                                     MemoryResultRow(item: item)
@@ -89,8 +89,8 @@ struct MemoryTestView: View {
                         }
                     }
 
-                    MemoryCard(title: "Import Session Context", systemImage: "square.and.arrow.down.on.square") {
-                        Text("Paste the important context from this ChatGPT session and push it directly from the app into your Supabase memory. This does not use a ChatGPT connector write.")
+                    MemoryCard(title: "Import Session Context to Supabase", systemImage: "square.and.arrow.down.on.square") {
+                        Text("Paste important context from this ChatGPT session and push it directly from the app into Supabase. Local Vault above works even when Supabase import is not deployed yet.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
 
@@ -109,12 +109,8 @@ struct MemoryTestView: View {
 
                         Stepper("Importance: \(sessionImportImportance)/5", value: $sessionImportImportance, in: 1...5)
 
-                        Text("Session context")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.secondary)
-
                         TextEditor(text: $sessionImportContent)
-                            .frame(minHeight: 160)
+                            .frame(minHeight: 140)
                             .padding(8)
                             .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
                             .overlay(
@@ -126,7 +122,7 @@ struct MemoryTestView: View {
                             Button {
                                 if let pasted = UIPasteboard.general.string, !pasted.isEmpty {
                                     sessionImportContent = pasted
-                                    appModel.statusMessage = "Pasted clipboard into session context import."
+                                    appModel.statusMessage = "Pasted clipboard into Supabase import."
                                 } else {
                                     appModel.statusMessage = "Clipboard does not contain text."
                                 }
@@ -137,36 +133,27 @@ struct MemoryTestView: View {
                             .buttonStyle(.bordered)
 
                             Button {
-                                sessionImportContent = ""
-                                appModel.statusMessage = "Cleared session import text."
+                                Task {
+                                    await appModel.importSessionAfterApproval(
+                                        title: sessionImportTitle,
+                                        content: sessionImportContent,
+                                        source: sessionImportSource,
+                                        tagsText: sessionImportTags,
+                                        importance: sessionImportImportance
+                                    )
+                                }
                             } label: {
-                                Label("Clear", systemImage: "xmark.circle")
+                                Label("Approve Import", systemImage: "checkmark.seal")
                                     .frame(maxWidth: .infinity)
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(
+                                appModel.isBusy
+                                || appModel.selectedProject == nil
+                                || sessionImportTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || sessionImportContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            )
                         }
-
-                        Button {
-                            Task {
-                                await appModel.importSessionAfterApproval(
-                                    title: sessionImportTitle,
-                                    content: sessionImportContent,
-                                    source: sessionImportSource,
-                                    tagsText: sessionImportTags,
-                                    importance: sessionImportImportance
-                                )
-                            }
-                        } label: {
-                            Label("Approve Import", systemImage: "checkmark.seal")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(
-                            appModel.isBusy
-                            || appModel.selectedProject == nil
-                            || sessionImportTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || sessionImportContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        )
 
                         if let result = appModel.lastSessionImportResult {
                             VStack(alignment: .leading, spacing: 6) {
@@ -185,7 +172,7 @@ struct MemoryTestView: View {
                     }
 
                     MemoryCard(title: "Virtual MCP Save", systemImage: "point.3.connected.trianglepath.dotted") {
-                        Text("Prototype the future connector contract inside the app. Review this proposed memory, then approve the virtual `save_context_after_approval` tool call.")
+                        Text("Review this structured memory, then approve the real backend `save_context_after_approval` tool call.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
 
@@ -279,8 +266,8 @@ struct MemoryTestView: View {
                         }
                     }
 
-                    MemoryCard(title: "Save Memory", systemImage: "square.and.pencil") {
-                        Text("Save compact facts, decisions, links, file notes, or next steps so a future chat can restart faster.")
+                    MemoryCard(title: "Save Supabase Memory", systemImage: "square.and.pencil") {
+                        Text("Save compact facts, decisions, links, file notes, or next steps into Supabase.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
 
@@ -305,7 +292,7 @@ struct MemoryTestView: View {
                                 )
                             }
                         } label: {
-                            Label("Save Memory", systemImage: "tray.and.arrow.down")
+                            Label("Save Supabase", systemImage: "tray.and.arrow.down")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
@@ -313,7 +300,7 @@ struct MemoryTestView: View {
                     }
 
                     MemoryCard(title: "Project", systemImage: "folder") {
-                        Text("The selected project controls where memory is saved and searched.")
+                        Text("The selected project controls where Supabase memory is saved. Local Vault uses this name when available, but can work without Supabase.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
 
@@ -353,13 +340,13 @@ struct MemoryTestView: View {
                     }
 
                     MemoryCard(title: "Account and Setup", systemImage: "person.crop.circle") {
-                        MemoryInfoRow(label: "Account", value: appModel.authEmail ?? "Logged in")
+                        MemoryInfoRow(label: "Account", value: appModel.authEmail ?? "Not signed in")
 
                         if let config = appModel.configStore.config {
                             MemoryInfoRow(label: "Supabase project", value: config.projectRef)
                         }
 
-                        Text("Setup stays available in its own tab. This area is for account level actions only, keeping the Memory tab focused on dashboard, search, and save work.")
+                        Text("Setup stays available in its own tab. Local Vault stays on device when you log out or change Supabase config.")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -380,15 +367,15 @@ struct MemoryTestView: View {
     }
 
     private var accountText: String {
-        appModel.authEmail ?? "Signed in"
+        appModel.authEmail ?? "Not signed in"
     }
 
     private var selectedProjectText: String {
-        appModel.selectedProject?.name ?? "No project selected"
+        appModel.selectedProject?.name ?? "Local Vault only"
     }
 
     private var providerText: String {
-        appModel.configStore.config?.projectRef ?? "Supabase not configured"
+        appModel.configStore.config?.projectRef ?? "Local device only"
     }
 }
 
@@ -398,6 +385,7 @@ private struct MemoryDashboardCard: View {
     let providerText: String
     let memoryCountText: String
     let projectCountText: String
+    let localCountText: String
     let isBusy: Bool
     let statusText: String
     let canCopyContext: Bool
@@ -416,7 +404,7 @@ private struct MemoryDashboardCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Memory Dashboard")
                         .font(.title2.weight(.bold))
-                    Text("Resume projects faster with saved context, search, and copy-ready memory blocks.")
+                    Text("Local first memory, optional Supabase sync, and copy-ready context blocks.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
@@ -429,8 +417,9 @@ private struct MemoryDashboardCard: View {
             }
 
             HStack(spacing: 10) {
+                MemoryMetricPill(title: "Local", value: localCountText, systemImage: "externaldrive")
+                MemoryMetricPill(title: "Supabase", value: memoryCountText, systemImage: "doc.text.magnifyingglass")
                 MemoryMetricPill(title: "Projects", value: projectCountText, systemImage: "folder")
-                MemoryMetricPill(title: "Results", value: memoryCountText, systemImage: "doc.text.magnifyingglass")
             }
 
             HStack(spacing: 10) {
@@ -446,7 +435,7 @@ private struct MemoryDashboardCard: View {
                 Button {
                     onCopyContext()
                 } label: {
-                    Label("Copy Context", systemImage: "doc.on.doc")
+                    Label("Copy Supabase", systemImage: "doc.on.doc")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
