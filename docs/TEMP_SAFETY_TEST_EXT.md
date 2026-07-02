@@ -1,3 +1,0 @@
-@MainActor
-extension AppModel {
-}
