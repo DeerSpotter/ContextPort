@@ -34,6 +34,7 @@ extension SecureChatGPTWebViewCoordinator {
         return !(PendingUploadRegistry.pendingURLsByCoordinator[key] ?? []).isEmpty
     }
 
+    @available(iOS 18.4, *)
     func webView(_ webView: WKWebView,
                  runOpenPanelWith parameters: WKOpenPanelParameters,
                  initiatedByFrame frame: WKFrameInfo,
@@ -104,6 +105,7 @@ extension ChatGPTWebViewStore {
 
     func triggerPendingAttachmentPicker() async {
         guard coordinator.hasPendingUploadURLs() else { return }
+        guard #available(iOS 18.4, *) else { return }
 
         try? await Task.sleep(nanoseconds: 1_200_000_000)
 
@@ -145,5 +147,48 @@ extension ChatGPTWebViewStore {
                 }
             }
         }
+    }
+
+    func injectComposerText(_ text: String) async -> Bool {
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "`", with: "\\`")
+            .replacingOccurrences(of: "$", with: "\\$")
+
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+
+        let script = """
+        (() => {
+          const text = `\(escaped)`;
+          const targets = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
+          const input = targets.find((el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 100 && r.height > 20;
+          });
+          if (!input) return false;
+          input.focus();
+          if (input.tagName === 'TEXTAREA') {
+            input.value = text;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }
+          input.textContent = text;
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+          return true;
+        })();
+        """
+
+        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+            webView.evaluateJavaScript(script) { value, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: value)
+                }
+            }
+        }
+
+        return (value as? Bool) == true
     }
 }
