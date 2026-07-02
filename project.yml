@@ -23,3 +23,4 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.deerspotter.ChatGPTWebView
         PRODUCT_NAME: ChatGPTWebView
         INFOPLIST_FILE: ChatGPTWebView/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
