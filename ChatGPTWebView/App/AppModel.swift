@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -12,6 +13,8 @@ final class AppModel: ObservableObject {
     @Published var localMemoryEntries: [LocalMemoryEntry] = []
     @Published var localMemorySearchResults: [LocalMemoryEntry] = []
     @Published var localRenderedContext = ""
+    @Published var pendingLocalStartContext: String?
+    @Published var openChatGPTTabRequestID = UUID()
     @Published var diagnostics: [SupabaseDiagnosticResult] = []
     @Published private(set) var lastVirtualMCPResult: VirtualMCPSaveContextResult?
     @Published private(set) var lastSessionImportResult: SessionContextImportResult?
@@ -301,6 +304,22 @@ final class AppModel: ObservableObject {
         } catch {
             self.statusMessage = "Local context render failed: \(error.localizedDescription)"
         }
+    }
+
+    func localPDFURL(for entry: LocalMemoryEntry) -> URL? {
+        localMemoryStore.pdfURL(for: entry)
+    }
+
+    func startNewChat(using entry: LocalMemoryEntry) {
+        let context = localMemoryStore.startNewChatContext(for: entry)
+        self.pendingLocalStartContext = context
+        UIPasteboard.general.string = context
+        self.openChatGPTTabRequestID = UUID()
+        self.statusMessage = "Prepared saved context for a new chat. Paste it into ChatGPT to begin."
+    }
+
+    func clearPendingLocalStartContext() {
+        self.pendingLocalStartContext = nil
     }
 
     func runVirtualSaveContextAfterApproval(
