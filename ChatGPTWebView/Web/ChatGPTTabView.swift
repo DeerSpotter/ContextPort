@@ -31,14 +31,22 @@ struct ChatGPTTabView: View {
             .padding(.horizontal, 12)
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
-            let pendingFiles = PendingLocalMemoryAttachment.consumeFileURLs()
-            webViewStore.startNewChatWithPendingUploadURLs(pendingFiles)
+            let payload = PendingLocalMemoryAttachment.consumePayload()
+            webViewStore.startNewChatWithPendingUploadURLs(payload?.fileURLs ?? [])
 
-            if !pendingFiles.isEmpty {
-                appModel.statusMessage = "Opening new chat and preparing saved PDF attachment."
-                Task { @MainActor in
-                    await webViewStore.triggerPendingAttachmentPicker()
+            guard let payload else { return }
+
+            UIPasteboard.general.string = payload.composerText
+            appModel.statusMessage = "Opening new chat with saved context. On iOS 16 the Markdown is inserted or copied for paste."
+
+            Task { @MainActor in
+                let inserted = await webViewStore.injectComposerText(payload.composerText)
+                if inserted {
+                    appModel.statusMessage = "Saved Markdown was inserted into the new chat. Review and send."
+                } else {
+                    appModel.statusMessage = "Saved Markdown copied. Paste it into the new chat."
                 }
+                await webViewStore.triggerPendingAttachmentPicker()
             }
         }
     }
