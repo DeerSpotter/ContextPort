@@ -16,6 +16,8 @@ The upstream release IPA should not be treated as trusted unless that exact IPA 
 - Dark mode support
 - ChatGPT tab stop button for quickly stopping current WebView activity
 - ChatGPT tab refresh button for reloading a stale or frozen WebView session
+- Local device memory vault for offline context capture
+- Local memory search and rendered context copy workflow
 - Bring your own Supabase project setup
 - Supabase setup diagnostics
 - Supabase setup deep link import
@@ -29,13 +31,24 @@ The upstream release IPA should not be treated as trusted unless that exact IPA 
 - TrollStore compatibility
 - Manual or Xcode install
 
-## Supabase memory direction
+## Memory direction
 
-The next app direction is a Supabase backed memory layer for project/session continuity.
+The app is moving toward a local first memory model.
 
-Goal: avoid losing progress when a chat gets too large by storing compact project memory, summaries, decisions, tasks, artifacts, and file notes outside the chat session.
+The most important path is now:
 
-Manual context writing is not the product goal. Memory capture should reduce work through an OpenAI API chat tab, a ChatGPT App/MCP connector, or another tool driven flow where ChatGPT can create structured memory with user approval.
+```text
+ChatGPT session context
+  -> copy or share into the app
+  -> save to Local Device Memory Vault
+  -> search locally
+  -> render a copy-ready project context block
+  -> optionally sync or push to Supabase later
+```
+
+This makes the app useful even when a ChatGPT connector write is unavailable, blocked, or not deployed. Supabase remains valuable for sync, backup, and future MCP connector work, but the local vault is the first place context should land.
+
+Manual context writing is not the product goal. Memory capture should reduce work through local import, an OpenAI API chat tab, a ChatGPT App/MCP connector, or another tool driven flow where ChatGPT can create structured memory with user approval.
 
 The public app does not hardcode a developer-owned Supabase project. Each user supplies their own Supabase project URL and publishable key, then deploys the memory schema and Edge Function into that project.
 
