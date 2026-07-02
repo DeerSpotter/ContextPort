@@ -17,12 +17,6 @@ struct RootView: View {
                     Label("Memory", systemImage: "externaldrive.connected.to.line.below")
                 }
                 .tag(AppTab.memory)
-
-            SupabaseSetupView()
-                .tabItem {
-                    Label("Setup", systemImage: "gearshape")
-                }
-                .tag(AppTab.setup)
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
             selectedTab = .chatgpt
@@ -33,27 +27,17 @@ struct RootView: View {
 private enum AppTab: Hashable {
     case chatgpt
     case memory
-    case setup
 }
 
 struct SupabaseSetupRequiredView: View {
     var body: some View {
         NavigationView {
-            VStack(spacing: 14) {
-                Image(systemName: "gearshape")
-                    .font(.largeTitle)
-                    .foregroundColor(.secondary)
-
-                Text("Supabase setup optional")
-                    .font(.headline)
-
-                Text("Local Device Memory Vault works without Supabase. Open Setup only when you want Supabase sync, diagnostics, and login.")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
-            .navigationTitle("Memory")
+            Text("Memory is local and available on this device.")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding()
+                .navigationTitle("Memory")
         }
     }
 }
