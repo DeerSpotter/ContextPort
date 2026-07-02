@@ -5,6 +5,7 @@ final class LocalMemoryStore {
     private let decoder: JSONDecoder
     private let fileManager: FileManager
     private let directoryURL: URL
+    private let pdfDirectoryURL: URL
     private let entriesURL: URL
 
     init(fileManager: FileManager = .default) {
@@ -13,6 +14,7 @@ final class LocalMemoryStore {
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
         self.directoryURL = baseURL.appendingPathComponent("LocalMemoryVault", isDirectory: true)
+        self.pdfDirectoryURL = directoryURL.appendingPathComponent("PDFs", isDirectory: true)
         self.entriesURL = directoryURL.appendingPathComponent("entries.json")
 
         let encoder = JSONEncoder()
@@ -51,7 +53,10 @@ final class LocalMemoryStore {
     ) throws -> LocalMemorySaveResult {
         var entries = try loadEntries()
         let now = Date()
-        let entry = LocalMemoryEntry(
+        let id = UUID()
+        let pdfFilename = "\(id.uuidString).pdf"
+        var entry = LocalMemoryEntry(
+            id: id,
             projectName: clean(projectName, fallback: "Local Project"),
             title: clean(title, fallback: "Untitled memory"),
             content: clean(content, fallback: ""),
@@ -59,14 +64,21 @@ final class LocalMemoryStore {
             tags: normalizedTags(tags),
             importance: importance,
             createdAt: now,
-            updatedAt: now
+            updatedAt: now,
+            pdfFilename: pdfFilename,
+            attachmentFilenames: []
         )
+
+        try ensureDirectory()
+        try LocalMemoryPDFRenderer.render(entry: entry, to: pdfDirectoryURL.appendingPathComponent(pdfFilename))
+        entry.pdfFilename = pdfFilename
+
         entries.append(entry)
         try writeEntries(entries.sorted(by: sortEntries))
         return LocalMemorySaveResult(
             entry: entry,
             totalCount: entries.count,
-            message: "Saved to local device memory."
+            message: "Saved PDF to local device memory."
         )
     }
 
@@ -93,6 +105,38 @@ final class LocalMemoryStore {
             }
             .prefix(limit)
             .map(\.0)
+    }
+
+    func pdfURL(for entry: LocalMemoryEntry) -> URL? {
+        guard let pdfFilename = entry.pdfFilename else {
+            return nil
+        }
+        let url = pdfDirectoryURL.appendingPathComponent(pdfFilename)
+        return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func startNewChatContext(for entry: LocalMemoryEntry) -> String {
+        var lines: [String] = []
+        lines.append("Start a new chat using this saved local context. Treat it as user-provided project/session memory. Use it when relevant, but current instructions override older context.")
+        lines.append("")
+        lines.append("# Saved Context")
+        lines.append("")
+        lines.append("Title: \(entry.title)")
+        lines.append("Project: \(entry.projectName)")
+        lines.append("Source: \(entry.source)")
+        lines.append("Importance: \(entry.importance)/5")
+        if let pdfFilename = entry.pdfFilename {
+            lines.append("Local PDF: \(pdfFilename)")
+        }
+        if !entry.attachmentFilenames.isEmpty {
+            lines.append("Local files: \(entry.attachmentFilenames.joined(separator: ", "))")
+        }
+        if !entry.tags.isEmpty {
+            lines.append("Tags: \(entry.tags.joined(separator: ", "))")
+        }
+        lines.append("")
+        lines.append(entry.content)
+        return lines.joined(separator: "\n")
     }
 
     func renderProjectContext(projectName: String, limit: Int = 20) throws -> String {
@@ -127,6 +171,12 @@ final class LocalMemoryStore {
             lines.append("- Source: \(entry.source)")
             lines.append("- Importance: \(entry.importance)/5")
             lines.append("- Created: \(Self.isoFormatter.string(from: entry.createdAt))")
+            if let pdfFilename = entry.pdfFilename {
+                lines.append("- Local PDF: \(pdfFilename)")
+            }
+            if !entry.attachmentFilenames.isEmpty {
+                lines.append("- Local files: \(entry.attachmentFilenames.joined(separator: ", "))")
+            }
             if !entry.tags.isEmpty {
                 lines.append("- Tags: \(entry.tags.joined(separator: ", "))")
             }
@@ -141,6 +191,11 @@ final class LocalMemoryStore {
     private func ensureDirectory() throws {
         try fileManager.createDirectory(
             at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try fileManager.createDirectory(
+            at: pdfDirectoryURL,
             withIntermediateDirectories: true,
             attributes: nil
         )
@@ -186,8 +241,8 @@ final class LocalMemoryStore {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
 
-        if !tags.contains("local") {
-            tags.append("local")
+        for required in ["local", "pdf"] where !tags.contains(required) {
+            tags.append(required)
         }
 
         return Array(Set(tags)).sorted()
