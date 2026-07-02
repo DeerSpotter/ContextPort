@@ -6,93 +6,70 @@ struct LocalMemoryDetailView: View {
     @EnvironmentObject private var appModel: AppModel
     let entry: LocalMemoryEntry
 
+    private let store = LocalMemoryStore()
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(entry.title)
-                        .font(.title2.weight(.bold))
-                    Text("Project: \(entry.projectName)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Source: \(entry.source) • Importance: \(entry.importance)/5")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    if !entry.tags.isEmpty {
-                        Text(entry.tags.joined(separator: ", "))
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
+                Text(entry.title)
+                    .font(.title2.weight(.bold))
+
+                Button {
+                    appModel.startNewChat(using: entry)
+                } label: {
+                    Label("Start New Chat", systemImage: "bubble.left.and.bubble.right")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
 
-                HStack(spacing: 10) {
-                    Button {
-                        appModel.startNewChat(using: entry)
-                    } label: {
-                        Label("Start New Chat", systemImage: "bubble.left.and.bubble.right")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
+                fileInfo
 
-                    Button {
-                        UIPasteboard.general.string = entry.content
-                        appModel.statusMessage = "Copied saved context text."
-                    } label: {
-                        Label("Copy Text", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                Text("Start New Chat copies this saved context to the clipboard and switches to ChatGPT. Paste it into the new chat to use this PDF-backed local memory as context.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                if let pdfURL = appModel.localPDFURL(for: entry) {
+                if let pdfURL = store.pdfURL(for: entry) {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Saved PDF")
-                                .font(.headline)
-                            Spacer()
-                            Button {
-                                UIPasteboard.general.string = pdfURL.lastPathComponent
-                                appModel.statusMessage = "Copied local PDF filename."
-                            } label: {
-                                Label("Copy Name", systemImage: "doc.on.doc")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
+                        Text("PDF")
+                            .font(.headline)
                         LocalPDFPreview(url: pdfURL)
                             .frame(height: 520)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-                            )
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.18), lineWidth: 1))
                     }
-                } else {
-                    Text("No local PDF file was found for this memory entry. The saved text is still available below.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved Text")
-                        .font(.headline)
-                    Text(entry.content)
-                        .font(.footnote)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                if let markdown = store.markdownText(for: entry) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Markdown")
+                            .font(.headline)
+                        Text(markdown)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                    }
                 }
             }
             .padding()
         }
-        .navigationTitle("Saved Context")
+        .navigationTitle("Saved Chat")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var fileInfo: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let messageCount = entry.messageCount {
+                Text("Messages: \(messageCount)")
+            }
+            if let pdfFilename = entry.pdfFilename {
+                Text("PDF: \(pdfFilename)")
+            }
+            if let markdownFilename = entry.markdownFilename {
+                Text("Markdown: \(markdownFilename)")
+            }
+            Text("Source: \(entry.source)")
+        }
+        .font(.caption)
+        .foregroundColor(.secondary)
+        .textSelection(.enabled)
     }
 }
 
