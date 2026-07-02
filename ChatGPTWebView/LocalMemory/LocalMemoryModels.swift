@@ -11,6 +11,9 @@ struct LocalMemoryEntry: Codable, Identifiable, Sendable, Hashable {
     var createdAt: Date
     var updatedAt: Date
     var pdfFilename: String?
+    var markdownFilename: String?
+    var messageCount: Int?
+    var exportedAt: String?
     var attachmentFilenames: [String]
 
     init(
@@ -24,6 +27,9 @@ struct LocalMemoryEntry: Codable, Identifiable, Sendable, Hashable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         pdfFilename: String? = nil,
+        markdownFilename: String? = nil,
+        messageCount: Int? = nil,
+        exportedAt: String? = nil,
         attachmentFilenames: [String] = []
     ) {
         self.id = id
@@ -36,6 +42,9 @@ struct LocalMemoryEntry: Codable, Identifiable, Sendable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.pdfFilename = pdfFilename
+        self.markdownFilename = markdownFilename
+        self.messageCount = messageCount
+        self.exportedAt = exportedAt
         self.attachmentFilenames = attachmentFilenames
     }
 
@@ -51,6 +60,9 @@ struct LocalMemoryEntry: Codable, Identifiable, Sendable, Hashable {
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         self.pdfFilename = try container.decodeIfPresent(String.self, forKey: .pdfFilename)
+        self.markdownFilename = try container.decodeIfPresent(String.self, forKey: .markdownFilename)
+        self.messageCount = try container.decodeIfPresent(Int.self, forKey: .messageCount)
+        self.exportedAt = try container.decodeIfPresent(String.self, forKey: .exportedAt)
         self.attachmentFilenames = try container.decodeIfPresent([String].self, forKey: .attachmentFilenames) ?? []
     }
 }
