@@ -98,6 +98,10 @@ extension SecureChatGPTWebViewCoordinator {
 
 @MainActor
 extension ChatGPTWebViewStore {
+    func preparePendingUploadURLs(_ urls: [URL]) {
+        coordinator.setPendingUploadURLs(urls)
+    }
+
     func startNewChatWithPendingUploadURLs(_ urls: [URL]) {
         coordinator.setPendingUploadURLs(urls)
         startNewChat()
@@ -105,40 +109,125 @@ extension ChatGPTWebViewStore {
 
     func triggerPendingAttachmentPicker() async {
         guard coordinator.hasPendingUploadURLs() else { return }
-        guard #available(iOS 18.4, *) else { return }
-
         try? await Task.sleep(nanoseconds: 1_200_000_000)
-
         guard coordinator.hasPendingUploadURLs() else { return }
+        _ = await activateComposerAndOpenAttachmentPicker()
+    }
 
+    func activateComposerAndOpenAttachmentPicker() async -> Bool {
         let script = #"""
         (() => {
+          const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return r.width > 12 && r.height > 12 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+
+          const tapLikeUser = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const x = Math.max(1, Math.floor(r.left + Math.min(Math.max(r.width - 1, 1), Math.max(18, r.width / 2))));
+            const y = Math.max(1, Math.floor(r.top + Math.min(Math.max(r.height - 1, 1), Math.max(12, r.height / 2))));
+            const mouse = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+            const pointer = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y };
+            el.scrollIntoView({ block: 'center', inline: 'nearest' });
+            try { el.dispatchEvent(new PointerEvent('pointerover', pointer)); } catch (_) {}
+            try { el.dispatchEvent(new PointerEvent('pointerdown', pointer)); } catch (_) {}
+            el.dispatchEvent(new MouseEvent('mouseover', mouse));
+            el.dispatchEvent(new MouseEvent('mousedown', mouse));
+            el.dispatchEvent(new MouseEvent('mouseup', mouse));
+            try { el.dispatchEvent(new PointerEvent('pointerup', pointer)); } catch (_) {}
+            el.dispatchEvent(new MouseEvent('click', mouse));
+            el.focus?.({ preventScroll: true });
+            return true;
+          };
+
+          const composerSelectors = [
+            'textarea',
+            '[contenteditable="true"]',
+            '.ProseMirror',
+            '[data-testid="composer"] [contenteditable="true"]',
+            '[data-testid="composer"] textarea',
+            'form textarea',
+            'form [contenteditable="true"]'
+          ];
+
+          const findComposer = () => {
+            for (const selector of composerSelectors) {
+              const candidates = Array.from(document.querySelectorAll(selector)).filter(visible);
+              if (candidates.length) return candidates[candidates.length - 1];
+            }
+            return null;
+          };
+
+          const composer = findComposer();
+          const composerRect = composer?.getBoundingClientRect?.() || null;
+          if (composer) {
+            tapLikeUser(composer);
+          } else {
+            const shell = Array.from(document.querySelectorAll('form, [data-testid="composer"], main')).reverse().find(visible);
+            if (shell) tapLikeUser(shell);
+          }
+
+          const labelFor = (candidate) => [
+            candidate.innerText,
+            candidate.textContent,
+            candidate.getAttribute('aria-label'),
+            candidate.getAttribute('title'),
+            candidate.getAttribute('data-testid')
+          ].filter(Boolean).join(' ').trim().toLowerCase();
+
+          const attachScore = (candidate) => {
+            const label = labelFor(candidate);
+            let score = 0;
+            if (label.includes('attach')) score += 100;
+            if (label.includes('upload')) score += 100;
+            if (label.includes('file')) score += 80;
+            if (label.includes('add')) score += 40;
+            if (label === '+' || label.includes('plus')) score += 40;
+            if (!score) return -1;
+            const r = candidate.getBoundingClientRect();
+            if (composerRect) {
+              score -= Math.min(80, Math.abs(r.top - composerRect.top) / 4);
+              score -= Math.min(40, Math.abs(r.left - composerRect.left) / 8);
+            }
+            if (r.top > window.innerHeight * 0.55) score += 20;
+            return score;
+          };
+
+          const buttons = Array.from(document.querySelectorAll('button,[role="button"],a,input[type="button"]')).filter(visible);
+          const attachButton = buttons
+            .map((candidate) => ({ candidate, score: attachScore(candidate) }))
+            .filter((item) => item.score >= 0)
+            .sort((a, b) => b.score - a.score)[0]?.candidate;
+
+          if (attachButton) {
+            tapLikeUser(attachButton);
+            setTimeout(() => {
+              const menuItem = Array.from(document.querySelectorAll('button,[role="button"],a,[role="menuitem"]'))
+                .filter(visible)
+                .find((candidate) => {
+                  const label = labelFor(candidate);
+                  return label.includes('upload') || label.includes('file') || label.includes('computer') || label.includes('photo');
+                });
+              if (menuItem) tapLikeUser(menuItem);
+              setTimeout(() => document.querySelector('input[type="file"]')?.click(), 250);
+            }, 250);
+            return true;
+          }
+
           const input = document.querySelector('input[type="file"]');
           if (input) {
             input.click();
-            return 'clicked-file-input';
+            return true;
           }
 
-          const buttons = Array.from(document.querySelectorAll('button,[role="button"]'));
-          const button = buttons.find((candidate) => {
-            const label = [candidate.innerText, candidate.getAttribute('aria-label'), candidate.getAttribute('title')]
-              .filter(Boolean)
-              .join(' ')
-              .toLowerCase();
-            return label.includes('attach') || label.includes('upload') || label.includes('file') || label.includes('add');
-          });
-
-          if (button) {
-            button.click();
-            setTimeout(() => document.querySelector('input[type="file"]')?.click(), 350);
-            return 'clicked-attach-button';
-          }
-
-          return 'no-file-control-found';
+          return false;
         })();
         """#
 
-        _ = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
             webView.evaluateJavaScript(script) { value, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -147,6 +236,8 @@ extension ChatGPTWebViewStore {
                 }
             }
         }
+
+        return (value as? Bool) == true
     }
 
     func injectComposerText(_ text: String) async -> Bool {
