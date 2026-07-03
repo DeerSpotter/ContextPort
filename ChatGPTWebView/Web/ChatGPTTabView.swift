@@ -5,6 +5,9 @@ struct ChatGPTTabView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var webViewStore = ChatGPTWebViewStore()
     @State private var isSavingContext = false
+    @State private var isPastingContext = false
+    @State private var pendingPasteContextText: String?
+    @State private var pendingPasteContextID = UUID()
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -13,11 +16,15 @@ struct ChatGPTTabView: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
             HStack(spacing: 10) {
-                Button(isSavingContext ? "Saving" : "Save Context") {
-                    saveCurrentChatToMemory()
+                Button(contextButtonTitle) {
+                    if let pendingPasteContextText {
+                        pastePendingContext(pendingPasteContextText)
+                    } else {
+                        saveCurrentChatToMemory()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isSavingContext)
+                .disabled(isSavingContext || isPastingContext)
 
                 CircleIconButton(systemImage: "stop.circle", accessibilityLabel: "Stop ChatGPT activity", accessibilityHint: "Stops current WebView activity") {
                     webViewStore.stopCurrentActivity()
@@ -38,11 +45,53 @@ struct ChatGPTTabView: View {
 
             if let composerText = payload.composerText, !composerText.isEmpty {
                 UIPasteboard.general.string = composerText
-                appModel.statusMessage = "Saved Markdown copied. Tap the ChatGPT composer and paste it."
+                pendingPasteContextText = composerText
+                pendingPasteContextID = UUID()
+                appModel.statusMessage = "Saved Markdown copied. Tap Paste Context to insert it, or continue without it."
+                watchForConversationStartWithoutPaste(pendingPasteContextID)
             } else if !payload.fileURLs.isEmpty {
                 appModel.statusMessage = "Opening new chat. Tap +, choose Files, then select the exported file from ChatGPT Memory."
                 Task { @MainActor in
                     await webViewStore.triggerPendingAttachmentPicker()
+                }
+            }
+        }
+    }
+
+    private var contextButtonTitle: String {
+        if isPastingContext { return "Pasting" }
+        if pendingPasteContextText != nil { return "Paste Context" }
+        return isSavingContext ? "Saving" : "Save Context"
+    }
+
+    private func pastePendingContext(_ text: String) {
+        guard !isPastingContext else { return }
+        isPastingContext = true
+        UIPasteboard.general.string = text
+
+        Task { @MainActor in
+            defer { isPastingContext = false }
+            let inserted = await webViewStore.injectComposerText(text)
+            if inserted {
+                pendingPasteContextText = nil
+                pendingPasteContextID = UUID()
+                appModel.statusMessage = "Pasted saved context. Review and send."
+            } else {
+                appModel.statusMessage = "Context copied. Tap the ChatGPT composer and paste it manually."
+            }
+        }
+    }
+
+    private func watchForConversationStartWithoutPaste(_ id: UUID) {
+        Task { @MainActor in
+            for _ in 0..<90 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard pendingPasteContextID == id, pendingPasteContextText != nil else { return }
+                if await webViewStore.hasStartedConversation() {
+                    pendingPasteContextText = nil
+                    pendingPasteContextID = UUID()
+                    appModel.statusMessage = "Continuing without pasted Memory context. Save Context is available again."
+                    return
                 }
             }
         }
