@@ -2,16 +2,18 @@ import Foundation
 
 struct PendingLocalMemoryPayload {
     let fileURLs: [URL]
-    let composerText: String
+    let composerText: String?
 }
 
 enum PendingLocalMemoryAttachment {
     private static let entryIDKey = "PendingLocalMemoryAttachmentEntryID"
     private static let selectedFilePathsKey = "PendingLocalMemoryAttachmentSelectedFilePaths"
+    private static let injectMarkdownKey = "PendingLocalMemoryAttachmentInjectMarkdown"
 
-    static func mark(_ entry: LocalMemoryEntry, fileURLs: [URL] = []) {
+    static func mark(_ entry: LocalMemoryEntry, fileURLs: [URL] = [], injectMarkdown: Bool = false) {
         UserDefaults.standard.set(entry.id.uuidString, forKey: entryIDKey)
         UserDefaults.standard.set(fileURLs.map(\.path), forKey: selectedFilePathsKey)
+        UserDefaults.standard.set(injectMarkdown, forKey: injectMarkdownKey)
     }
 
     static func consumePayload() -> PendingLocalMemoryPayload? {
@@ -21,8 +23,10 @@ enum PendingLocalMemoryAttachment {
         }
 
         let selectedPaths = UserDefaults.standard.stringArray(forKey: selectedFilePathsKey) ?? []
+        let shouldInjectMarkdown = UserDefaults.standard.bool(forKey: injectMarkdownKey)
         UserDefaults.standard.removeObject(forKey: entryIDKey)
         UserDefaults.standard.removeObject(forKey: selectedFilePathsKey)
+        UserDefaults.standard.removeObject(forKey: injectMarkdownKey)
 
         guard let entries = try? LocalMemoryStore().loadEntries(),
               let entry = entries.first(where: { $0.id == id }) else {
@@ -30,19 +34,24 @@ enum PendingLocalMemoryAttachment {
         }
 
         let store = LocalMemoryStore()
-        let markdown = store.markdownText(for: entry) ?? entry.content
-        let composerText = """
-        Continue this saved ChatGPT conversation context. Use the saved context below as project memory. Current instructions override older context.
-
-        \(markdown)
-        """
-
         let selectedURLs = selectedPaths
             .map(URL.init(fileURLWithPath:))
             .filter { FileManager.default.fileExists(atPath: $0.path) }
 
+        let composerText: String?
+        if shouldInjectMarkdown {
+            let markdown = store.markdownText(for: entry) ?? entry.content
+            composerText = """
+            Continue this saved ChatGPT conversation context. Use the saved context below as project memory. Current instructions override older context.
+
+            \(markdown)
+            """
+        } else {
+            composerText = nil
+        }
+
         return PendingLocalMemoryPayload(
-            fileURLs: selectedURLs.isEmpty ? store.fileURLs(for: entry) : selectedURLs,
+            fileURLs: selectedURLs,
             composerText: composerText
         )
     }
