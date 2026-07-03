@@ -301,6 +301,24 @@ extension ChatGPTWebViewStore {
             return true;
           };
 
+          const closeTransientMenus = () => {
+            const escDown = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
+            const escUp = new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
+            document.dispatchEvent(escDown);
+            window.dispatchEvent(escDown);
+            document.body?.dispatchEvent(escDown);
+            document.dispatchEvent(escUp);
+            window.dispatchEvent(escUp);
+            document.body?.dispatchEvent(escUp);
+
+            const composer = findComposer();
+            if (composer) {
+              tapLikeUser(composer);
+            } else {
+              document.body?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: 8, clientY: 8 }));
+            }
+          };
+
           const findComposer = () => {
             const selectors = [
               'textarea',
@@ -353,7 +371,11 @@ extension ChatGPTWebViewStore {
               input.files = transfer.files;
               input.dispatchEvent(new Event('input', { bubbles: true }));
               input.dispatchEvent(new Event('change', { bubbles: true }));
-              if (input.files && input.files.length > 0) return true;
+              if (input.files && input.files.length > 0) {
+                closeTransientMenus();
+                await wait(250);
+                return true;
+              }
             } catch (_) {}
           }
 
@@ -384,7 +406,12 @@ extension ChatGPTWebViewStore {
             .map((el) => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('data-testid')].filter(Boolean).join(' '))
             .join(' ')
             .toLowerCase();
-          return records.some((record) => attachmentHints.includes(record.name.toLowerCase())) || false;
+          const success = records.some((record) => attachmentHints.includes(record.name.toLowerCase())) || false;
+          if (success) {
+            closeTransientMenus();
+            await wait(250);
+          }
+          return success;
         })();
         """
 
