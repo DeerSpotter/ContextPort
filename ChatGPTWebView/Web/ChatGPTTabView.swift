@@ -71,7 +71,7 @@ struct ChatGPTTabView: View {
         } else if !payload.fileURLs.isEmpty {
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextText = nil
-            appModel.statusMessage = "Files are ready. Tap Attach Files to activate the composer and open ChatGPT file upload."
+            appModel.statusMessage = "Files are ready. Tap Attach Files to try direct memory attach."
         }
     }
 
@@ -99,9 +99,17 @@ struct ChatGPTTabView: View {
 
         Task { @MainActor in
             defer { isAttachingFiles = false }
+            let memoryAttachWorked = await webViewStore.injectFilesIntoChatGPTUpload(urls)
+            if memoryAttachWorked {
+                pendingAttachFileURLs = []
+                appModel.statusMessage = "Attached files from app Memory. Review the new chat before sending."
+                return
+            }
+
+            webViewStore.preparePendingUploadURLs(urls)
             let opened = await webViewStore.activateComposerAndOpenAttachmentPicker()
             if opened {
-                appModel.statusMessage = "Attach flow opened. Select the exported PDF or Markdown from ChatGPT Memory."
+                appModel.statusMessage = "Attach menu opened. Choose Files, then select the exported PDF or Markdown from ChatGPT Memory."
             } else {
                 appModel.statusMessage = "Could not open attach yet. Wait for ChatGPT to finish loading, then tap Attach Files again."
             }
