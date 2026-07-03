@@ -240,6 +240,167 @@ extension ChatGPTWebViewStore {
         return (value as? Bool) == true
     }
 
+    func injectFilesIntoChatGPTUpload(_ urls: [URL]) async -> Bool {
+        struct FileRecord: Encodable {
+            let name: String
+            let mime: String
+            let base64: String
+        }
+
+        let maxTotalBytes = 18_000_000
+        var totalBytes = 0
+        var records: [FileRecord] = []
+
+        for url in urls {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let data = try? Data(contentsOf: url) else { continue }
+            totalBytes += data.count
+            guard totalBytes <= maxTotalBytes else { return false }
+
+            let ext = url.pathExtension
+            let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+            records.append(FileRecord(name: url.lastPathComponent, mime: mime, base64: data.base64EncodedString()))
+        }
+
+        guard !records.isEmpty,
+              let jsonData = try? JSONEncoder().encode(records),
+              let json = String(data: jsonData, encoding: .utf8) else {
+            return false
+        }
+
+        let script = """
+        (async () => {
+          const records = \(json);
+          if (!records.length) return false;
+
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+          const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return r.width > 12 && r.height > 12 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+
+          const tapLikeUser = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const x = Math.max(1, Math.floor(r.left + Math.min(Math.max(r.width - 1, 1), Math.max(18, r.width / 2))));
+            const y = Math.max(1, Math.floor(r.top + Math.min(Math.max(r.height - 1, 1), Math.max(12, r.height / 2))));
+            const mouse = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+            const pointer = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y };
+            el.scrollIntoView({ block: 'center', inline: 'nearest' });
+            try { el.dispatchEvent(new PointerEvent('pointerover', pointer)); } catch (_) {}
+            try { el.dispatchEvent(new PointerEvent('pointerdown', pointer)); } catch (_) {}
+            el.dispatchEvent(new MouseEvent('mouseover', mouse));
+            el.dispatchEvent(new MouseEvent('mousedown', mouse));
+            el.dispatchEvent(new MouseEvent('mouseup', mouse));
+            try { el.dispatchEvent(new PointerEvent('pointerup', pointer)); } catch (_) {}
+            el.dispatchEvent(new MouseEvent('click', mouse));
+            el.focus?.({ preventScroll: true });
+            return true;
+          };
+
+          const findComposer = () => {
+            const selectors = [
+              'textarea',
+              '[contenteditable="true"]',
+              '.ProseMirror',
+              '[data-testid="composer"] [contenteditable="true"]',
+              '[data-testid="composer"] textarea',
+              'form textarea',
+              'form [contenteditable="true"]'
+            ];
+            for (const selector of selectors) {
+              const candidates = Array.from(document.querySelectorAll(selector)).filter(visible);
+              if (candidates.length) return candidates[candidates.length - 1];
+            }
+            return null;
+          };
+
+          const makeFiles = () => {
+            const files = records.map((record) => {
+              const binary = atob(record.base64);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+              return new File([bytes], record.name, { type: record.mime || 'application/octet-stream' });
+            });
+            return files;
+          };
+
+          const makeTransfer = (files) => {
+            let transfer = null;
+            try { transfer = new DataTransfer(); } catch (_) {}
+            if (!transfer) {
+              try { transfer = new ClipboardEvent('paste').clipboardData; } catch (_) {}
+            }
+            if (!transfer) return null;
+            for (const file of files) transfer.items.add(file);
+            return transfer;
+          };
+
+          const files = makeFiles();
+          const transfer = makeTransfer(files);
+          if (!transfer || !transfer.files || transfer.files.length === 0) return false;
+
+          const composer = findComposer();
+          if (composer) tapLikeUser(composer);
+          await wait(200);
+
+          const input = Array.from(document.querySelectorAll('input[type="file"]')).reverse()[0];
+          if (input) {
+            try {
+              input.files = transfer.files;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              if (input.files && input.files.length > 0) return true;
+            } catch (_) {}
+          }
+
+          const dropTargets = [
+            composer,
+            document.querySelector('form'),
+            document.querySelector('[data-testid="composer"]'),
+            document.querySelector('main'),
+            document.body
+          ].filter(Boolean);
+
+          for (const target of dropTargets) {
+            try {
+              target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+            } catch (_) {}
+            try {
+              target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            } catch (_) {}
+            try {
+              target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+              target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+              target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            } catch (_) {}
+          }
+
+          await wait(600);
+          const attachmentHints = Array.from(document.querySelectorAll('[data-testid], [aria-label], a, button, div, span'))
+            .map((el) => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('data-testid')].filter(Boolean).join(' '))
+            .join(' ')
+            .toLowerCase();
+          return records.some((record) => attachmentHints.includes(record.name.toLowerCase())) || false;
+        })();
+        """
+
+        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+            webView.evaluateJavaScript(script) { value, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: value)
+                }
+            }
+        }
+
+        return (value as? Bool) == true
+    }
+
     func injectComposerText(_ text: String) async -> Bool {
         let encodedText: String
         if let data = try? JSONSerialization.data(withJSONObject: [text], options: []),
