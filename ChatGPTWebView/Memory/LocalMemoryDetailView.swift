@@ -119,16 +119,16 @@ struct LocalMemoryDetailView: View {
 
             let injectMarkdown = !exportPDF && !exportMarkdown
             PendingLocalMemoryAttachment.mark(entry, fileURLs: exportedURLs, injectMarkdown: injectMarkdown)
-            appModel.startNewChat(using: entry)
 
             if exportedURLs.isEmpty {
                 exportMessage = "Opening new chat. Saved Markdown will be inserted or copied for paste."
-                appModel.statusMessage = exportMessage ?? "Opening new chat."
             } else {
                 let fileList = exportedURLs.map(\.lastPathComponent).joined(separator: ", ")
                 exportMessage = "Downloaded for this chat: \(fileList). In ChatGPT, tap + > Files > ChatGPT Memory."
-                appModel.statusMessage = exportMessage ?? "Downloaded selected files for this chat."
             }
+
+            appModel.statusMessage = exportMessage ?? "Opening new chat."
+            appModel.openChatGPTTabRequestID = UUID()
         } catch {
             exportMessage = "Could not download selected file: \(error.localizedDescription)"
             appModel.statusMessage = exportMessage ?? "Download failed."
