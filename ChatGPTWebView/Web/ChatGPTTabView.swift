@@ -71,7 +71,7 @@ struct ChatGPTTabView: View {
         } else if !payload.fileURLs.isEmpty {
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextText = nil
-            appModel.statusMessage = "Files are ready. Tap Attach Files to try direct memory attach."
+            appModel.statusMessage = "Files are ready. Tap Attach Files to attach from app Memory."
         }
     }
 
@@ -105,7 +105,7 @@ struct ChatGPTTabView: View {
             if memoryAttachWorked {
                 appModel.statusMessage = "Attached files from app Memory. Review the new chat before sending."
             } else {
-                appModel.statusMessage = "Direct memory attach was attempted. If the file card did not appear, use ChatGPT + > Files manually."
+                appModel.statusMessage = "Direct memory attach was attempted. If the file card did not appear, return to Memory and try again."
             }
         }
     }
