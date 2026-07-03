@@ -155,7 +155,7 @@ extension ChatGPTWebViewStore {
             .replacingOccurrences(of: "`", with: "\\`")
             .replacingOccurrences(of: "$", with: "\\$")
 
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        try? await Task.sleep(nanoseconds: 300_000_000)
 
         let script = """
         (() => {
@@ -178,6 +178,29 @@ extension ChatGPTWebViewStore {
           return true;
         })();
         """
+
+        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+            webView.evaluateJavaScript(script) { value, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: value)
+                }
+            }
+        }
+
+        return (value as? Bool) == true
+    }
+
+    func hasStartedConversation() async -> Bool {
+        let script = #"""
+        (() => {
+          const roleMessages = document.querySelectorAll('[data-message-author-role="user"], [data-message-author-role="assistant"]');
+          if (roleMessages.length > 0) return true;
+          const turns = document.querySelectorAll('article[data-testid*="conversation-turn"], [data-testid*="conversation-turn"]');
+          return turns.length > 0;
+        })();
+        """#
 
         let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
             webView.evaluateJavaScript(script) { value, error in
