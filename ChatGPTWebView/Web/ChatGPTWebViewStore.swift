@@ -7,12 +7,20 @@ final class ChatGPTWebViewStore: ObservableObject {
     let webView: WKWebView
     let coordinator: SecureChatGPTWebViewCoordinator
 
+    private struct CapturedBrowserState: Decodable {
+        let origin: String
+        let localStorage: [String: String]
+        let lastURL: String
+    }
+
     private let startURL: URL
     private let initialURL: URL
     private let profile: ChatGPTProfile
     private let cookieVault: ChatGPTProfileCookieVault
+    private let browserStateVault: ChatGPTProfileBrowserStateVault
     private let onDetectedDisplayName: (String, String) -> Void
     private var didPrepareInitialLoad = false
+    private var delayedCaptureTask: Task<Void, Never>?
 
     init(
         startURL: URL = URL(string: "https://chatgpt.com/")!,
@@ -23,18 +31,35 @@ final class ChatGPTWebViewStore: ObservableObject {
             kind: .primary
         ),
         cookieVault: ChatGPTProfileCookieVault = ChatGPTProfileCookieVault(),
+        browserStateVault: ChatGPTProfileBrowserStateVault = ChatGPTProfileBrowserStateVault(),
         onDetectedDisplayName: @escaping (String, String) -> Void = { _, _ in }
     ) {
         self.startURL = startURL
-        self.initialURL = initialURL ?? startURL
         self.profile = profile
         self.cookieVault = cookieVault
+        self.browserStateVault = browserStateVault
         self.onDetectedDisplayName = onDetectedDisplayName
         self.coordinator = SecureChatGPTWebViewCoordinator()
+
+        let restoredURL = profile.kind == .saved
+            ? browserStateVault.lastURL(profileID: profile.id)
+            : nil
+        self.initialURL = restoredURL ?? initialURL ?? startURL
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = profile.kind == .primary ? .default() : .nonPersistent()
         configuration.allowsInlineMediaPlayback = true
+
+        if profile.kind == .saved,
+           let restoreScript = browserStateVault.documentStartRestoreScript(profileID: profile.id) {
+            configuration.userContentController.addUserScript(
+                WKUserScript(
+                    source: restoreScript,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true
+                )
+            )
+        }
 
         if #available(iOS 14.0, *) {
             configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -50,7 +75,7 @@ final class ChatGPTWebViewStore: ObservableObject {
 
         coordinator.navigationDidFinishHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.captureProfileState()
+                self?.scheduleProfileStateCapture()
             }
         }
     }
@@ -115,10 +140,36 @@ final class ChatGPTWebViewStore: ObservableObject {
         webView.load(URLRequest(url: startURL))
     }
 
+    private func scheduleProfileStateCapture() {
+        delayedCaptureTask?.cancel()
+        delayedCaptureTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            await self.captureProfileState()
+
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await self.captureProfileState()
+
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            await self.captureProfileState()
+        }
+    }
+
     private func captureProfileState() async {
         if profile.kind == .saved {
             let cookies = await allCookies()
             cookieVault.save(cookies, profileID: profile.id)
+
+            if let browserState = await captureCurrentBrowserState() {
+                browserStateVault.save(
+                    origin: browserState.origin,
+                    localStorage: browserState.localStorage,
+                    lastURL: browserState.lastURL,
+                    profileID: profile.id
+                )
+            }
         }
 
         guard profile.kind != .guest,
@@ -135,6 +186,35 @@ final class ChatGPTWebViewStore: ObservableObject {
         for cookie in cookies {
             await setCookie(cookie)
         }
+    }
+
+    private func captureCurrentBrowserState() async -> CapturedBrowserState? {
+        let script = #"""
+        (() => {
+          const values = {};
+          try {
+            for (let index = 0; index < window.localStorage.length; index++) {
+              const key = window.localStorage.key(index);
+              if (key === null) continue;
+              const value = window.localStorage.getItem(key);
+              if (value !== null) values[key] = value;
+            }
+          } catch (_) {}
+
+          return JSON.stringify({
+            origin: window.location.origin || '',
+            localStorage: values,
+            lastURL: window.location.href || ''
+          });
+        })();
+        """#
+
+        guard let raw = await evaluateJavaScript(script) as? String,
+              let data = raw.data(using: .utf8) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(CapturedBrowserState.self, from: data)
     }
 
     private func allCookies() async -> [HTTPCookie] {
@@ -209,17 +289,15 @@ final class ChatGPTWebViewStore: ObservableObject {
         })();
         """#
 
-        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
-            webView.evaluateJavaScript(script) { value, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: value)
-                }
+        return await evaluateJavaScript(script) as? String
+    }
+
+    private func evaluateJavaScript(_ script: String) async -> Any? {
+        await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(script) { value, _ in
+                continuation.resume(returning: value)
             }
         }
-
-        return value as? String
     }
 }
 
