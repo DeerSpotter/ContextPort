@@ -57,10 +57,11 @@ struct ChatGPTTabView: View {
     }
 
     private func handlePendingMemoryStart() {
-        let payload = PendingLocalMemoryAttachment.consumePayload()
-        webViewStore.startNewChatWithPendingUploadURLs(payload?.fileURLs ?? [])
+        guard let payload = PendingLocalMemoryAttachment.consumePayload() else {
+            return
+        }
 
-        guard let payload else { return }
+        webViewStore.startNewChatWithPendingUploadURLs(payload.fileURLs)
 
         if let composerText = payload.composerText, !composerText.isEmpty {
             pendingPasteContextText = composerText
