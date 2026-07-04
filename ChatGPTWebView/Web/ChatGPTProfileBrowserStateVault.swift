@@ -1,5 +1,10 @@
 import Foundation
 
+enum ChatGPTProfileSessionStatus: String, Codable {
+    case active
+    case loggedOut
+}
+
 struct ChatGPTProfileOriginBrowserState: Codable {
     var localStorage: [String: String]
 }
@@ -8,11 +13,13 @@ struct ChatGPTProfileBrowserState: Codable {
     var origins: [String: ChatGPTProfileOriginBrowserState]
     var lastURL: String?
     var capturedAt: Date
+    var sessionStatus: ChatGPTProfileSessionStatus?
 
     static let empty = ChatGPTProfileBrowserState(
         origins: [:],
         lastURL: nil,
-        capturedAt: .distantPast
+        capturedAt: .distantPast,
+        sessionStatus: nil
     )
 }
 
@@ -44,6 +51,10 @@ final class ChatGPTProfileBrowserStateVault {
         return state
     }
 
+    func shouldRestoreSession(profileID: String) -> Bool {
+        load(profileID: profileID).sessionStatus != .loggedOut
+    }
+
     func save(
         origin: String,
         localStorage: [String: String],
@@ -56,16 +67,24 @@ final class ChatGPTProfileBrowserStateVault {
         state.origins[origin] = ChatGPTProfileOriginBrowserState(localStorage: localStorage)
         state.lastURL = lastURL ?? state.lastURL
         state.capturedAt = Date()
+        state.sessionStatus = .active
+        write(state, profileID: profileID)
+    }
 
-        guard let data = try? JSONEncoder().encode(state) else { return }
-        try? data.write(
-            to: fileURL(profileID: profileID),
-            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+    func markLoggedOut(profileID: String) {
+        let state = ChatGPTProfileBrowserState(
+            origins: [:],
+            lastURL: nil,
+            capturedAt: Date(),
+            sessionStatus: .loggedOut
         )
+        write(state, profileID: profileID)
     }
 
     func lastURL(profileID: String) -> URL? {
-        guard let value = load(profileID: profileID).lastURL,
+        let state = load(profileID: profileID)
+        guard state.sessionStatus != .loggedOut,
+              let value = state.lastURL,
               let url = URL(string: value),
               url.scheme?.lowercased() == "https",
               let host = url.host?.lowercased(),
@@ -76,7 +95,10 @@ final class ChatGPTProfileBrowserStateVault {
     }
 
     func documentStartRestoreScript(profileID: String) -> String? {
-        let states = load(profileID: profileID).origins.mapValues(\.localStorage)
+        let state = load(profileID: profileID)
+        guard state.sessionStatus != .loggedOut else { return nil }
+
+        let states = state.origins.mapValues(\.localStorage)
         guard !states.isEmpty,
               let data = try? JSONEncoder().encode(states),
               let json = String(data: data, encoding: .utf8) else {
@@ -99,6 +121,14 @@ final class ChatGPTProfileBrowserStateVault {
 
     func delete(profileID: String) {
         try? fileManager.removeItem(at: fileURL(profileID: profileID))
+    }
+
+    private func write(_ state: ChatGPTProfileBrowserState, profileID: String) {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        try? data.write(
+            to: fileURL(profileID: profileID),
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        )
     }
 
     private func fileURL(profileID: String) -> URL {
