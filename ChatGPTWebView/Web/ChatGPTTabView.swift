@@ -4,8 +4,8 @@ import UIKit
 struct ChatGPTTabView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
+    @EnvironmentObject private var sessionPool: ChatGPTProfileSessionPool
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var sessionPool = ChatGPTProfileSessionPool()
     @State private var isSavingContext = false
     @State private var isPastingContext = false
     @State private var isAttachingFiles = false
@@ -66,10 +66,10 @@ struct ChatGPTTabView: View {
             persistAllLiveProfileSessions()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            isKeyboardVisible = true
+            setTypingPriority(true)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            isKeyboardVisible = false
+            setTypingPriority(false)
         }
     }
 
@@ -90,6 +90,11 @@ struct ChatGPTTabView: View {
         return isSavingContext ? "Saving" : "Save Context"
     }
 
+    private func setTypingPriority(_ isTyping: Bool) {
+        isKeyboardVisible = isTyping
+        sessionPool.setTypingPriority(isTyping, profileID: profileManager.activeProfileID)
+    }
+
     private func handleActiveProfileAppearance() {
         guard profileManager.activeProfile.kind == .guest else { return }
         Task { @MainActor in
@@ -102,6 +107,9 @@ struct ChatGPTTabView: View {
 
     private func handleProfileChange(from previousProfileID: String) {
         let activeProfile = profileManager.activeProfile
+
+        sessionPool.setTypingPriority(false, profileID: previousProfileID)
+        sessionPool.setTypingPriority(isKeyboardVisible, profileID: activeProfile.id)
 
         Task { @MainActor in
             await sessionPool.persistSession(profileID: previousProfileID)
@@ -184,6 +192,8 @@ struct ChatGPTTabView: View {
             for _ in 0..<120 {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard pendingPasteContextID == id, pendingPasteContextText != nil else { return }
+                guard !isKeyboardVisible else { continue }
+
                 let currentUserMessages = await webViewStore.userMessageCount()
                 if currentUserMessages > baselineUserMessages {
                     pendingPasteContextText = nil
