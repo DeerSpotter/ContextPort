@@ -8,6 +8,7 @@ final class ChatGPTWebViewStore: ObservableObject {
     let coordinator: SecureChatGPTWebViewCoordinator
 
     private let startURL: URL
+    private let initialURL: URL
     private let profile: ChatGPTProfile
     private let cookieVault: ChatGPTProfileCookieVault
     private let onDetectedDisplayName: (String, String) -> Void
@@ -15,6 +16,7 @@ final class ChatGPTWebViewStore: ObservableObject {
 
     init(
         startURL: URL = URL(string: "https://chatgpt.com/")!,
+        initialURL: URL? = nil,
         profile: ChatGPTProfile = ChatGPTProfile(
             id: ChatGPTProfile.primaryID,
             displayName: "Current User",
@@ -24,6 +26,7 @@ final class ChatGPTWebViewStore: ObservableObject {
         onDetectedDisplayName: @escaping (String, String) -> Void = { _, _ in }
     ) {
         self.startURL = startURL
+        self.initialURL = initialURL ?? startURL
         self.profile = profile
         self.cookieVault = cookieVault
         self.onDetectedDisplayName = onDetectedDisplayName
@@ -69,10 +72,10 @@ final class ChatGPTWebViewStore: ObservableObject {
                 guard let self else { return }
                 await self.restoreSavedProfileCookies()
                 guard self.webView.url == nil, !self.webView.isLoading else { return }
-                self.webView.load(URLRequest(url: self.startURL))
+                self.webView.load(URLRequest(url: self.initialURL))
             }
         } else {
-            webView.load(URLRequest(url: startURL))
+            webView.load(URLRequest(url: initialURL))
         }
     }
 
