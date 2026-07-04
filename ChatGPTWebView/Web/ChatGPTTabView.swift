@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ChatGPTTabView: View {
     @EnvironmentObject private var appModel: AppModel
@@ -8,6 +9,7 @@ struct ChatGPTTabView: View {
     @State private var isSavingContext = false
     @State private var isPastingContext = false
     @State private var isAttachingFiles = false
+    @State private var isKeyboardVisible = false
     @State private var pendingPasteContextText: String?
     @State private var pendingAttachFileURLs: [URL] = []
     @State private var pendingPasteContextID = UUID()
@@ -20,29 +22,31 @@ struct ChatGPTTabView: View {
                 .ignoresSafeArea(.container, edges: .bottom)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
-            HStack(spacing: 10) {
-                Button(contextButtonTitle) {
-                    if let pendingPasteContextText {
-                        pastePendingContext(pendingPasteContextText)
-                    } else if !pendingAttachFileURLs.isEmpty {
-                        attachPendingFiles(pendingAttachFileURLs)
-                    } else {
-                        saveCurrentChatToMemory()
+            if !isKeyboardVisible {
+                HStack(spacing: 10) {
+                    Button(contextButtonTitle) {
+                        if let pendingPasteContextText {
+                            pastePendingContext(pendingPasteContextText)
+                        } else if !pendingAttachFileURLs.isEmpty {
+                            attachPendingFiles(pendingAttachFileURLs)
+                        } else {
+                            saveCurrentChatToMemory()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSavingContext || isPastingContext || isAttachingFiles)
+
+                    CircleIconButton(systemImage: "stop.circle", accessibilityLabel: "Stop ChatGPT activity", accessibilityHint: "Stops current WebView activity") {
+                        webViewStore.stopCurrentActivity()
+                    }
+
+                    CircleIconButton(systemImage: "arrow.clockwise", accessibilityLabel: "Reload ChatGPT session", accessibilityHint: "Reloads the current WebView page") {
+                        webViewStore.reloadCurrentSession()
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSavingContext || isPastingContext || isAttachingFiles)
-
-                CircleIconButton(systemImage: "stop.circle", accessibilityLabel: "Stop ChatGPT activity", accessibilityHint: "Stops current WebView activity") {
-                    webViewStore.stopCurrentActivity()
-                }
-
-                CircleIconButton(systemImage: "arrow.clockwise", accessibilityLabel: "Reload ChatGPT session", accessibilityHint: "Reloads the current WebView page") {
-                    webViewStore.reloadCurrentSession()
-                }
+                .padding(.top, 12)
+                .padding(.horizontal, 12)
             }
-            .padding(.top, 12)
-            .padding(.horizontal, 12)
         }
         .onAppear {
             lastProfileID = profileManager.activeProfileID
@@ -60,6 +64,12 @@ struct ChatGPTTabView: View {
         .onChange(of: scenePhase) { newPhase in
             guard newPhase == .inactive || newPhase == .background else { return }
             persistAllLiveProfileSessions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            isKeyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            isKeyboardVisible = false
         }
     }
 
