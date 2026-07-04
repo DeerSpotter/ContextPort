@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatGPTWebViewApp: App {
     @StateObject private var appModel = AppModel()
     @StateObject private var updateChecker = AppUpdateChecker()
+    @StateObject private var providerManager = AIProviderManager()
     @StateObject private var profileManager = ChatGPTProfileManager()
     @StateObject private var profileSessionPool = ChatGPTProfileSessionPool()
 
@@ -12,6 +13,7 @@ struct ChatGPTWebViewApp: App {
             RootView()
                 .environmentObject(appModel)
                 .environmentObject(updateChecker)
+                .environmentObject(providerManager)
                 .environmentObject(profileManager)
                 .environmentObject(profileSessionPool)
                 .task {
