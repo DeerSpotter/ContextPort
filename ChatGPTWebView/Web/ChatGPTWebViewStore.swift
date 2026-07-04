@@ -2,31 +2,38 @@ import Foundation
 import UIKit
 import WebKit
 
-struct ChatGPTPDFExport {
-    let title: String
-    let sourceURL: String?
-    let data: Data
-}
-
-private struct ChatGPTScrollMetrics {
-    let scrollHeight: CGFloat
-    let clientHeight: CGFloat
-    let maxScroll: CGFloat
-    let originalScrollTop: CGFloat
-}
-
 @MainActor
 final class ChatGPTWebViewStore: ObservableObject {
     let webView: WKWebView
     let coordinator: SecureChatGPTWebViewCoordinator
-    private let startURL: URL
 
-    init(startURL: URL = URL(string: "https://chatgpt.com/")!) {
+    private let startURL: URL
+    private let initialURL: URL
+    private let profile: ChatGPTProfile
+    private let cookieVault: ChatGPTProfileCookieVault
+    private let onDetectedDisplayName: (String, String) -> Void
+    private var didPrepareInitialLoad = false
+
+    init(
+        startURL: URL = URL(string: "https://chatgpt.com/")!,
+        initialURL: URL? = nil,
+        profile: ChatGPTProfile = ChatGPTProfile(
+            id: ChatGPTProfile.primaryID,
+            displayName: "Current User",
+            kind: .primary
+        ),
+        cookieVault: ChatGPTProfileCookieVault = ChatGPTProfileCookieVault(),
+        onDetectedDisplayName: @escaping (String, String) -> Void = { _, _ in }
+    ) {
         self.startURL = startURL
+        self.initialURL = initialURL ?? startURL
+        self.profile = profile
+        self.cookieVault = cookieVault
+        self.onDetectedDisplayName = onDetectedDisplayName
         self.coordinator = SecureChatGPTWebViewCoordinator()
 
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        configuration.websiteDataStore = profile.kind == .primary ? .default() : .nonPersistent()
         configuration.allowsInlineMediaPlayback = true
 
         if #available(iOS 14.0, *) {
@@ -39,8 +46,13 @@ final class ChatGPTWebViewStore: ObservableObject {
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .interactive
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
-
         self.webView = webView
+
+        coordinator.navigationDidFinishHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.captureProfileState()
+            }
+        }
     }
 
     func loadIfNeeded() {
@@ -48,7 +60,23 @@ final class ChatGPTWebViewStore: ObservableObject {
             return
         }
 
-        webView.load(URLRequest(url: startURL))
+        guard !didPrepareInitialLoad else {
+            webView.load(URLRequest(url: startURL))
+            return
+        }
+
+        didPrepareInitialLoad = true
+
+        if profile.kind == .saved {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.restoreSavedProfileCookies()
+                guard self.webView.url == nil, !self.webView.isLoading else { return }
+                self.webView.load(URLRequest(url: self.initialURL))
+            }
+        } else {
+            webView.load(URLRequest(url: initialURL))
+        }
     }
 
     func stopCurrentActivity() {
@@ -61,7 +89,7 @@ final class ChatGPTWebViewStore: ObservableObject {
         }
 
         if webView.url == nil {
-            webView.load(URLRequest(url: startURL))
+            loadIfNeeded()
         } else {
             webView.reload()
         }
@@ -74,173 +102,114 @@ final class ChatGPTWebViewStore: ObservableObject {
         webView.load(URLRequest(url: startURL))
     }
 
-    func exportCurrentPagePDF() async throws -> ChatGPTPDFExport {
-        let title = cleanTitle(webView.title)
-        let sourceURL = webView.url?.absoluteString
-        let metrics = try await prepareFullChatExport()
-        defer {
-            Task { @MainActor in
-                try? await restoreChatScroll(to: metrics.originalScrollTop)
-            }
-        }
-
-        let data = try await renderFullScrollPDF(title: title, metrics: metrics)
-        return ChatGPTPDFExport(title: title, sourceURL: sourceURL, data: data)
+    func persistProfileSession() async {
+        await captureProfileState()
     }
 
-    private func prepareFullChatExport() async throws -> ChatGPTScrollMetrics {
-        let script = """
+    func resetGuestSession() async {
+        guard profile.kind == .guest else { return }
+
+        webView.stopLoading()
+        await removeAllWebsiteData()
+        didPrepareInitialLoad = true
+        webView.load(URLRequest(url: startURL))
+    }
+
+    private func captureProfileState() async {
+        if profile.kind == .saved {
+            let cookies = await allCookies()
+            cookieVault.save(cookies, profileID: profile.id)
+        }
+
+        guard profile.kind != .guest,
+              let displayName = await detectCurrentAccountDisplayName(),
+              !displayName.isEmpty else {
+            return
+        }
+
+        onDetectedDisplayName(profile.id, displayName)
+    }
+
+    private func restoreSavedProfileCookies() async {
+        let cookies = cookieVault.load(profileID: profile.id)
+        for cookie in cookies {
+            await setCookie(cookie)
+        }
+    }
+
+    private func allCookies() async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
+        }
+    }
+
+    private func setCookie(_ cookie: HTTPCookie) async {
+        await withCheckedContinuation { continuation in
+            webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                continuation.resume()
+            }
+        }
+    }
+
+    private func removeAllWebsiteData() async {
+        await withCheckedContinuation { continuation in
+            webView.configuration.websiteDataStore.removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                modifiedSince: .distantPast
+            ) {
+                continuation.resume()
+            }
+        }
+    }
+
+    private func detectCurrentAccountDisplayName() async -> String? {
+        let script = #"""
         (() => {
-          function visibleArea(el) {
-            const r = el.getBoundingClientRect();
-            return Math.max(0, r.width) * Math.max(0, r.height);
+          const clean = (value) => String(value || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+          const candidates = Array.from(document.querySelectorAll(
+            'button,[role="button"],[aria-label],[title],[data-testid]'
+          ));
+
+          const values = [];
+          for (const element of candidates) {
+            const label = clean([
+              element.getAttribute('aria-label'),
+              element.getAttribute('title'),
+              element.innerText,
+              element.textContent
+            ].filter(Boolean).join(' '));
+            if (label) values.push(label);
           }
 
-          const candidates = [document.scrollingElement, document.documentElement, document.body]
-            .concat(Array.from(document.querySelectorAll('main, [role="main"], div, section')))
-            .filter(Boolean);
-
-          let best = document.scrollingElement || document.documentElement || document.body;
-          let bestScore = 0;
-
-          for (const el of candidates) {
-            const scrollHeight = Number(el.scrollHeight || 0);
-            const clientHeight = Number(el.clientHeight || 0);
-            const maxScroll = scrollHeight - clientHeight;
-            if (scrollHeight < 800 || maxScroll < 80) continue;
-
-            const area = visibleArea(el);
-            const score = scrollHeight + area / 1000 + maxScroll * 3;
-            if (score > bestScore) {
-              best = el;
-              bestScore = score;
-            }
+          for (const value of values) {
+            const email = value.match(emailPattern);
+            if (email) return email[0];
           }
 
-          window.__chatgptFullChatExportTarget = best;
-          window.__chatgptFullChatExportOriginalScrollTop = Number(best.scrollTop || window.scrollY || 0);
-          best.scrollTop = 0;
-          if (best === document.scrollingElement || best === document.documentElement || best === document.body) {
-            window.scrollTo(0, 0);
+          for (const element of candidates) {
+            const metadata = clean([
+              element.getAttribute('aria-label'),
+              element.getAttribute('title'),
+              element.getAttribute('data-testid')
+            ].filter(Boolean).join(' ')).toLowerCase();
+            if (!metadata.includes('profile') && !metadata.includes('account') && !metadata.includes('user')) continue;
+
+            const text = clean(element.innerText || element.textContent || '');
+            if (!text || text.length > 80) continue;
+            if (/^(profile|account|user|menu|open profile menu)$/i.test(text)) continue;
+            return text;
           }
 
-          return JSON.stringify({
-            scrollHeight: Number(best.scrollHeight || document.documentElement.scrollHeight || document.body.scrollHeight || 0),
-            clientHeight: Number(best.clientHeight || window.innerHeight || 0),
-            maxScroll: Math.max(0, Number((best.scrollHeight || 0) - (best.clientHeight || window.innerHeight || 0))),
-            originalScrollTop: Number(window.__chatgptFullChatExportOriginalScrollTop || 0)
-          });
+          return '';
         })();
-        """
+        """#
 
-        let value = try await evaluateStringJavaScript(script)
-        guard let data = value.data(using: .utf8),
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw NSError(domain: "ChatGPTPDFExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unable to read chat scroll metrics."])
-        }
-
-        let scrollHeight = CGFloat((object["scrollHeight"] as? NSNumber)?.doubleValue ?? 0)
-        let clientHeight = CGFloat((object["clientHeight"] as? NSNumber)?.doubleValue ?? 0)
-        let maxScroll = CGFloat((object["maxScroll"] as? NSNumber)?.doubleValue ?? max(0, scrollHeight - clientHeight))
-        let originalScrollTop = CGFloat((object["originalScrollTop"] as? NSNumber)?.doubleValue ?? 0)
-
-        try await waitForScrollSettle()
-        return ChatGPTScrollMetrics(
-            scrollHeight: max(scrollHeight, webView.bounds.height),
-            clientHeight: max(clientHeight, webView.bounds.height),
-            maxScroll: max(0, maxScroll),
-            originalScrollTop: originalScrollTop
-        )
-    }
-
-    private func renderFullScrollPDF(title: String, metrics: ChatGPTScrollMetrics) async throws -> Data {
-        let bounds = webView.bounds
-        guard bounds.width > 0, bounds.height > 0 else {
-            throw NSError(domain: "ChatGPTPDFExport", code: 2, userInfo: [NSLocalizedDescriptionKey: "WebView is not ready to export."])
-        }
-
-        let pageRect = CGRect(origin: .zero, size: bounds.size)
-        let step = max(120, bounds.height - 80)
-        let pageCount = max(1, Int(ceil((metrics.maxScroll + bounds.height) / step)))
-        let pdfData = NSMutableData()
-
-        UIGraphicsBeginPDFContextToData(pdfData, pageRect, [
-            kCGPDFContextTitle as String: title,
-            kCGPDFContextAuthor as String: "ChatGPTWebView Local PDF Context Memory",
-            kCGPDFContextCreator as String: "ChatGPTWebView"
-        ])
-        defer { UIGraphicsEndPDFContext() }
-
-        for pageIndex in 0..<pageCount {
-            let offset = min(CGFloat(pageIndex) * step, metrics.maxScroll)
-            try await setChatScrollTop(offset)
-            try await waitForScrollSettle()
-            let image = try await snapshotVisibleWebView()
-
-            UIGraphicsBeginPDFPageWithInfo(pageRect, nil)
-            image.draw(in: pageRect)
-        }
-
-        if metrics.maxScroll > 0 {
-            try await setChatScrollTop(metrics.maxScroll)
-            try await waitForScrollSettle()
-            let image = try await snapshotVisibleWebView()
-            UIGraphicsBeginPDFPageWithInfo(pageRect, nil)
-            image.draw(in: pageRect)
-        }
-
-        return pdfData as Data
-    }
-
-    private func setChatScrollTop(_ offset: CGFloat) async throws {
-        let script = """
-        (() => {
-          const target = window.__chatgptFullChatExportTarget || document.scrollingElement || document.documentElement || document.body;
-          const y = \(Double(offset));
-          target.scrollTop = y;
-          if (target === document.scrollingElement || target === document.documentElement || target === document.body) {
-            window.scrollTo(0, y);
-          }
-          return true;
-        })();
-        """
-        _ = try await evaluateJavaScript(script)
-    }
-
-    private func restoreChatScroll(to offset: CGFloat) async throws {
-        try await setChatScrollTop(offset)
-    }
-
-    private func snapshotVisibleWebView() async throws -> UIImage {
-        let configuration = WKSnapshotConfiguration()
-        configuration.rect = webView.bounds
-        configuration.afterScreenUpdates = true
-
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UIImage, Error>) in
-            webView.takeSnapshot(with: configuration) { image, error in
-                if let image {
-                    continuation.resume(returning: image)
-                } else {
-                    continuation.resume(throwing: error ?? NSError(domain: "ChatGPTPDFExport", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to capture chat page snapshot."]))
-                }
-            }
-        }
-    }
-
-    private func waitForScrollSettle() async throws {
-        try await Task.sleep(nanoseconds: 180_000_000)
-    }
-
-    private func evaluateStringJavaScript(_ script: String) async throws -> String {
-        let value = try await evaluateJavaScript(script)
-        if let string = value as? String {
-            return string
-        }
-        throw NSError(domain: "ChatGPTPDFExport", code: 4, userInfo: [NSLocalizedDescriptionKey: "Unexpected JavaScript result."])
-    }
-
-    private func evaluateJavaScript(_ script: String) async throws -> Any? {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
             webView.evaluateJavaScript(script) { value, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -249,25 +218,14 @@ final class ChatGPTWebViewStore: ObservableObject {
                 }
             }
         }
-    }
 
-    private func cleanTitle(_ value: String?) -> String {
-        let trimmed = (value ?? "")
-            .replacingOccurrences(of: "ChatGPT - ", with: "")
-            .replacingOccurrences(of: " - ChatGPT", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if !trimmed.isEmpty && trimmed.lowercased() != "chatgpt" {
-            return trimmed
-        }
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "ChatGPT chat \(formatter.string(from: Date()))"
+        return value as? String
     }
 }
 
 final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    var navigationDidFinishHandler: ((WKWebView) -> Void)?
+
     private let allowedHostSuffixes = [
         "chatgpt.com",
         "openai.com",
@@ -280,8 +238,6 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         "apple.com",
         "icloud.com",
         "microsoft.com",
-        "microsoftonline.com",
-        "live.com",
         "microsoftonline.com",
         "live.com",
         "msauth.net"
@@ -301,6 +257,10 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         "tel",
         "sms"
     ]
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        navigationDidFinishHandler?(webView)
+    }
 
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
