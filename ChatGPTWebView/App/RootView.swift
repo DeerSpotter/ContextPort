@@ -4,8 +4,10 @@ struct RootView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var updateChecker: AppUpdateChecker
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
+    @EnvironmentObject private var profileSessionPool: ChatGPTProfileSessionPool
     @Environment(\.openURL) private var openURL
     @State private var selectedTab: AppTab = .chatgpt
+    @State private var isShowingProfiles = false
     @State private var isShowingSettings = false
 
     var body: some View {
@@ -26,24 +28,50 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, 34)
 
+            if isShowingProfiles {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        isShowingProfiles = false
+                    }
+                    .zIndex(2)
+
+                ProfilePickerPopup(
+                    profileManager: profileManager,
+                    onProfileSelected: { profile in
+                        profileManager.selectProfile(profile)
+                        selectedTab = .chatgpt
+                        isShowingProfiles = false
+                    },
+                    onRemoveProfile: { profile in
+                        removeProfile(profile)
+                    },
+                    onAddLogin: {
+                        _ = profileManager.addLoginProfile()
+                        selectedTab = .chatgpt
+                        isShowingProfiles = false
+                    }
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 40)
+                .zIndex(3)
+            }
+
             CompactBottomSwitcher(
                 selectedTab: $selectedTab,
-                profileManager: profileManager,
-                onProfileSelected: { profile in
-                    profileManager.selectProfile(profile)
-                    selectedTab = .chatgpt
-                },
-                onAddLogin: {
-                    _ = profileManager.addLoginProfile()
-                    selectedTab = .chatgpt
+                onProfiles: {
+                    isShowingProfiles.toggle()
                 },
                 onSettings: {
+                    isShowingProfiles = false
                     isShowingSettings = true
                 }
             )
+            .zIndex(4)
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
             selectedTab = .chatgpt
+            isShowingProfiles = false
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(updateChecker: updateChecker)
@@ -60,6 +88,17 @@ struct RootView: View {
             )
         }
     }
+
+    private func removeProfile(_ profile: ChatGPTProfile) {
+        guard profile.kind == .saved else { return }
+
+        Task { @MainActor in
+            await profileSessionPool.removeSavedProfileSession(profileID: profile.id)
+            profileManager.removeSavedProfile(profile)
+            selectedTab = .chatgpt
+            isShowingProfiles = false
+        }
+    }
 }
 
 private enum AppTab: Hashable {
@@ -69,9 +108,7 @@ private enum AppTab: Hashable {
 
 private struct CompactBottomSwitcher: View {
     @Binding var selectedTab: AppTab
-    @ObservedObject var profileManager: ChatGPTProfileManager
-    let onProfileSelected: (ChatGPTProfile) -> Void
-    let onAddLogin: () -> Void
+    let onProfiles: () -> Void
     let onSettings: () -> Void
 
     var body: some View {
@@ -92,25 +129,13 @@ private struct CompactBottomSwitcher: View {
                 selectedTab = .memory
             }
 
-            Menu {
-                profileButton(profileManager.primaryProfile, title: primaryProfileTitle)
-                profileButton(profileManager.guestProfile, title: "Guest")
-
-                ForEach(profileManager.savedProfiles) { profile in
-                    profileButton(profile, title: profile.displayName)
-                }
-
-                Divider()
-
-                Button(action: onAddLogin) {
-                    Label("Add Login", systemImage: "plus")
-                }
-            } label: {
+            Button(action: onProfiles) {
                 Image(systemName: "person.crop.circle")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 44, height: 32)
                     .foregroundColor(.secondary)
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Profiles")
 
             Button(action: onSettings) {
@@ -127,6 +152,47 @@ private struct CompactBottomSwitcher: View {
         .background(.ultraThinMaterial)
         .overlay(Rectangle().fill(Color.secondary.opacity(0.16)).frame(height: 0.5), alignment: .top)
     }
+}
+
+private struct ProfilePickerPopup: View {
+    @ObservedObject var profileManager: ChatGPTProfileManager
+    let onProfileSelected: (ChatGPTProfile) -> Void
+    let onRemoveProfile: (ChatGPTProfile) -> Void
+    let onAddLogin: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            profileRow(profileManager.primaryProfile, title: primaryProfileTitle, removable: false)
+            profileRow(profileManager.guestProfile, title: "Guest", removable: false)
+
+            ForEach(profileManager.savedProfiles) { profile in
+                profileRow(profile, title: profile.displayName, removable: true)
+            }
+
+            Divider()
+
+            Button(action: onAddLogin) {
+                HStack(spacing: 9) {
+                    Image(systemName: "plus")
+                        .frame(width: 18)
+                    Text("Add Login")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 15, weight: .medium))
+                .padding(.horizontal, 12)
+                .frame(height: 40)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: 300)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
+        )
+        .shadow(radius: 8)
+    }
 
     private var primaryProfileTitle: String {
         profileManager.primaryDisplayName == "Current User"
@@ -135,14 +201,37 @@ private struct CompactBottomSwitcher: View {
     }
 
     @ViewBuilder
-    private func profileButton(_ profile: ChatGPTProfile, title: String) -> some View {
-        Button {
-            onProfileSelected(profile)
-        } label: {
-            if profileManager.activeProfileID == profile.id {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
+    private func profileRow(_ profile: ChatGPTProfile, title: String, removable: Bool) -> some View {
+        HStack(spacing: 0) {
+            Button {
+                onProfileSelected(profile)
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: profileManager.activeProfileID == profile.id ? "checkmark" : "")
+                        .frame(width: 18)
+                    Text(title)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 15, weight: .medium))
+                .padding(.leading, 12)
+                .frame(height: 40)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if removable {
+                Button {
+                    onRemoveProfile(profile)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(title)")
             }
         }
     }

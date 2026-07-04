@@ -5,6 +5,7 @@ struct ChatGPTWebViewApp: App {
     @StateObject private var appModel = AppModel()
     @StateObject private var updateChecker = AppUpdateChecker()
     @StateObject private var profileManager = ChatGPTProfileManager()
+    @StateObject private var profileSessionPool = ChatGPTProfileSessionPool()
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,7 @@ struct ChatGPTWebViewApp: App {
                 .environmentObject(appModel)
                 .environmentObject(updateChecker)
                 .environmentObject(profileManager)
+                .environmentObject(profileSessionPool)
                 .task {
                     await appModel.restoreSession()
                 }

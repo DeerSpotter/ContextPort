@@ -7,12 +7,27 @@ final class ChatGPTWebViewStore: ObservableObject {
     let webView: WKWebView
     let coordinator: SecureChatGPTWebViewCoordinator
 
+    private struct CapturedBrowserState: Decodable {
+        let origin: String
+        let localStorage: [String: String]
+        let lastURL: String
+    }
+
     private let startURL: URL
     private let initialURL: URL
     private let profile: ChatGPTProfile
     private let cookieVault: ChatGPTProfileCookieVault
+    private let browserStateVault: ChatGPTProfileBrowserStateVault
     private let onDetectedDisplayName: (String, String) -> Void
     private var didPrepareInitialLoad = false
+    private var didDetectDisplayName = false
+    private var explicitLogoutDetected = false
+    private var typingPriorityActive = false
+    private var captureDeferredForTyping = false
+    private var sessionMutationGeneration = 0
+    private var navigationGeneration = 0
+    private var logoutNavigationGeneration: Int?
+    private var delayedCaptureTask: Task<Void, Never>?
 
     init(
         startURL: URL = URL(string: "https://chatgpt.com/")!,
@@ -23,18 +38,58 @@ final class ChatGPTWebViewStore: ObservableObject {
             kind: .primary
         ),
         cookieVault: ChatGPTProfileCookieVault = ChatGPTProfileCookieVault(),
+        browserStateVault: ChatGPTProfileBrowserStateVault = ChatGPTProfileBrowserStateVault(),
         onDetectedDisplayName: @escaping (String, String) -> Void = { _, _ in }
     ) {
         self.startURL = startURL
-        self.initialURL = initialURL ?? startURL
         self.profile = profile
         self.cookieVault = cookieVault
+        self.browserStateVault = browserStateVault
         self.onDetectedDisplayName = onDetectedDisplayName
         self.coordinator = SecureChatGPTWebViewCoordinator()
+
+        let isPersistentProfile = profile.kind != .guest
+        let shouldRestorePersistentSession = !isPersistentProfile
+            || browserStateVault.shouldRestoreSession(profileID: profile.id)
+        self.explicitLogoutDetected = isPersistentProfile && !shouldRestorePersistentSession
+        self.logoutNavigationGeneration = self.explicitLogoutDetected ? 0 : nil
+
+        let restoredURL = isPersistentProfile && shouldRestorePersistentSession
+            ? browserStateVault.lastURL(profileID: profile.id)
+            : nil
+        self.initialURL = restoredURL ?? initialURL ?? startURL
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = profile.kind == .primary ? .default() : .nonPersistent()
         configuration.allowsInlineMediaPlayback = true
+
+        if isPersistentProfile {
+            configuration.userContentController.add(
+                coordinator,
+                name: SecureChatGPTWebViewCoordinator.profileLogoutMessageName
+            )
+            configuration.userContentController.addUserScript(
+                WKUserScript(
+                    source: Self.persistentProfileLogoutDetectionScript,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true
+                )
+            )
+
+            if shouldRestorePersistentSession,
+               let restoreScript = browserStateVault.documentStartRestoreScript(
+                profileID: profile.id,
+                overwriteExistingValues: profile.kind == .saved
+               ) {
+                configuration.userContentController.addUserScript(
+                    WKUserScript(
+                        source: restoreScript,
+                        injectionTime: .atDocumentStart,
+                        forMainFrameOnly: true
+                    )
+                )
+            }
+        }
 
         if #available(iOS 14.0, *) {
             configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -50,7 +105,14 @@ final class ChatGPTWebViewStore: ObservableObject {
 
         coordinator.navigationDidFinishHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.captureProfileState()
+                guard let self else { return }
+                self.navigationGeneration += 1
+                self.scheduleProfileStateCapture()
+            }
+        }
+        coordinator.logoutDetectedHandler = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handleExplicitLogoutDetected()
             }
         }
     }
@@ -67,10 +129,10 @@ final class ChatGPTWebViewStore: ObservableObject {
 
         didPrepareInitialLoad = true
 
-        if profile.kind == .saved {
+        if profile.kind != .guest {
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                await self.restoreSavedProfileCookies()
+                await self.restorePersistentProfileCookies()
                 guard self.webView.url == nil, !self.webView.isLoading else { return }
                 self.webView.load(URLRequest(url: self.initialURL))
             }
@@ -102,8 +164,42 @@ final class ChatGPTWebViewStore: ObservableObject {
         webView.load(URLRequest(url: startURL))
     }
 
+    func setTypingPriority(_ isTyping: Bool) {
+        guard typingPriorityActive != isTyping else { return }
+        typingPriorityActive = isTyping
+
+        if isTyping {
+            if delayedCaptureTask != nil {
+                captureDeferredForTyping = true
+            }
+            delayedCaptureTask?.cancel()
+            delayedCaptureTask = nil
+            return
+        }
+
+        if captureDeferredForTyping {
+            captureDeferredForTyping = false
+            scheduleProfileStateCapture()
+        }
+    }
+
     func persistProfileSession() async {
-        await captureProfileState()
+        await captureProfileState(force: true)
+    }
+
+    func removeSavedProfileSession() async {
+        guard profile.kind == .saved else { return }
+
+        sessionMutationGeneration += 1
+        explicitLogoutDetected = true
+        logoutNavigationGeneration = navigationGeneration
+        captureDeferredForTyping = false
+        delayedCaptureTask?.cancel()
+        delayedCaptureTask = nil
+        webView.stopLoading()
+        cookieVault.delete(profileID: profile.id)
+        browserStateVault.delete(profileID: profile.id)
+        await removeAllWebsiteData()
     }
 
     func resetGuestSession() async {
@@ -115,26 +211,160 @@ final class ChatGPTWebViewStore: ObservableObject {
         webView.load(URLRequest(url: startURL))
     }
 
-    private func captureProfileState() async {
-        if profile.kind == .saved {
-            let cookies = await allCookies()
-            cookieVault.save(cookies, profileID: profile.id)
-        }
+    private func handleExplicitLogoutDetected() {
+        guard profile.kind != .guest else { return }
 
-        guard profile.kind != .guest,
-              let displayName = await detectCurrentAccountDisplayName(),
-              !displayName.isEmpty else {
+        sessionMutationGeneration += 1
+        explicitLogoutDetected = true
+        logoutNavigationGeneration = navigationGeneration
+        didDetectDisplayName = false
+        captureDeferredForTyping = false
+        delayedCaptureTask?.cancel()
+        delayedCaptureTask = nil
+        cookieVault.delete(profileID: profile.id)
+        browserStateVault.markLoggedOut(profileID: profile.id)
+    }
+
+    private func scheduleProfileStateCapture() {
+        delayedCaptureTask?.cancel()
+
+        guard !typingPriorityActive else {
+            captureDeferredForTyping = true
+            delayedCaptureTask = nil
             return
         }
 
+        delayedCaptureTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled, let self else { return }
+
+            guard !self.typingPriorityActive else {
+                self.captureDeferredForTyping = true
+                return
+            }
+
+            await self.captureProfileState(force: false)
+        }
+    }
+
+    private func captureProfileState(force: Bool) async {
+        if typingPriorityActive && !force {
+            captureDeferredForTyping = true
+            return
+        }
+
+        var detectedDisplayName: String?
+        if !didDetectDisplayName || explicitLogoutDetected {
+            detectedDisplayName = await detectCurrentAccountDisplayName()
+        }
+
+        if explicitLogoutDetected {
+            let logoutGeneration = logoutNavigationGeneration ?? navigationGeneration
+            guard navigationGeneration > logoutGeneration,
+                  isAuthenticatedChatGPTURL(webView.url),
+                  let detectedDisplayName,
+                  !detectedDisplayName.isEmpty else {
+                cookieVault.delete(profileID: profile.id)
+                browserStateVault.markLoggedOut(profileID: profile.id)
+                return
+            }
+
+            sessionMutationGeneration += 1
+            browserStateVault.markActive(profileID: profile.id)
+            explicitLogoutDetected = false
+            logoutNavigationGeneration = nil
+            didDetectDisplayName = true
+            onDetectedDisplayName(profile.id, detectedDisplayName)
+        }
+
+        let captureGeneration = sessionMutationGeneration
+
+        if profile.kind != .guest {
+            let cookies = await allCookies()
+            guard captureGeneration == sessionMutationGeneration, !explicitLogoutDetected else {
+                return
+            }
+
+            let browserState = await captureCurrentBrowserState()
+            guard captureGeneration == sessionMutationGeneration, !explicitLogoutDetected else {
+                return
+            }
+
+            cookieVault.save(cookies, profileID: profile.id)
+            if let browserState {
+                browserStateVault.save(
+                    origin: browserState.origin,
+                    localStorage: browserState.localStorage,
+                    lastURL: browserState.lastURL,
+                    profileID: profile.id
+                )
+            }
+        }
+
+        guard profile.kind != .guest, !didDetectDisplayName else {
+            return
+        }
+
+        let displayName: String?
+        if let detectedDisplayName {
+            displayName = detectedDisplayName
+        } else {
+            displayName = await detectCurrentAccountDisplayName()
+        }
+
+        guard let displayName, !displayName.isEmpty else {
+            return
+        }
+
+        didDetectDisplayName = true
         onDetectedDisplayName(profile.id, displayName)
     }
 
-    private func restoreSavedProfileCookies() async {
-        let cookies = cookieVault.load(profileID: profile.id)
-        for cookie in cookies {
+    private func restorePersistentProfileCookies() async {
+        guard browserStateVault.shouldRestoreSession(profileID: profile.id) else {
+            return
+        }
+
+        let existingCookies = await allCookies()
+        let existingCookieIDs = Set(existingCookies.map(cookieIdentity))
+        let savedCookies = cookieVault.load(profileID: profile.id)
+
+        for cookie in savedCookies where !existingCookieIDs.contains(cookieIdentity(cookie)) {
             await setCookie(cookie)
         }
+    }
+
+    private func cookieIdentity(_ cookie: HTTPCookie) -> String {
+        "\(cookie.name)\u{0}\(cookie.domain.lowercased())\u{0}\(cookie.path)"
+    }
+
+    private func captureCurrentBrowserState() async -> CapturedBrowserState? {
+        let script = #"""
+        (() => {
+          const values = {};
+          try {
+            for (let index = 0; index < window.localStorage.length; index++) {
+              const key = window.localStorage.key(index);
+              if (key === null) continue;
+              const value = window.localStorage.getItem(key);
+              if (value !== null) values[key] = value;
+            }
+          } catch (_) {}
+
+          return JSON.stringify({
+            origin: window.location.origin || '',
+            localStorage: values,
+            lastURL: window.location.href || ''
+          });
+        })();
+        """#
+
+        guard let raw = await evaluateJavaScript(script) as? String,
+              let data = raw.data(using: .utf8) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(CapturedBrowserState.self, from: data)
     }
 
     private func allCookies() async -> [HTTPCookie] {
@@ -162,6 +392,17 @@ final class ChatGPTWebViewStore: ObservableObject {
                 continuation.resume()
             }
         }
+    }
+
+    private func isAuthenticatedChatGPTURL(_ url: URL?) -> Bool {
+        guard let url,
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") else {
+            return false
+        }
+
+        return !url.path.lowercased().hasPrefix("/auth")
     }
 
     private func detectCurrentAccountDisplayName() async -> String? {
@@ -209,22 +450,51 @@ final class ChatGPTWebViewStore: ObservableObject {
         })();
         """#
 
-        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
-            webView.evaluateJavaScript(script) { value, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: value)
-                }
+        return await evaluateJavaScript(script) as? String
+    }
+
+    private func evaluateJavaScript(_ script: String) async -> Any? {
+        await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(script) { value, _ in
+                continuation.resume(returning: value)
             }
         }
-
-        return value as? String
     }
+
+    private static let persistentProfileLogoutDetectionScript = #"""
+    (() => {
+      const normalize = (value) => String(value || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+
+      document.addEventListener('click', (event) => {
+        const target = event.target instanceof Element
+          ? event.target.closest('button,a,[role="menuitem"],[role="button"]')
+          : null;
+        if (!target) return;
+
+        const labels = [
+          target.innerText,
+          target.textContent,
+          target.getAttribute('aria-label'),
+          target.getAttribute('title')
+        ].filter(Boolean).map(normalize);
+
+        if (!labels.some((label) => /^(log\s*out|logout|sign\s*out)$/.test(label))) return;
+        try {
+          window.webkit.messageHandlers.chatGPTProfileLogout.postMessage('logout');
+        } catch (_) {}
+      }, true);
+    })();
+    """#
 }
 
-final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static let profileLogoutMessageName = "chatGPTProfileLogout"
+
     var navigationDidFinishHandler: ((WKWebView) -> Void)?
+    var logoutDetectedHandler: (() -> Void)?
 
     private let allowedHostSuffixes = [
         "chatgpt.com",
@@ -257,6 +527,11 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         "tel",
         "sms"
     ]
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == Self.profileLogoutMessageName else { return }
+        logoutDetectedHandler?()
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         navigationDidFinishHandler?(webView)

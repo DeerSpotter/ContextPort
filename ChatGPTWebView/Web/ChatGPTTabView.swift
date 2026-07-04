@@ -1,12 +1,15 @@
 import SwiftUI
+import UIKit
 
 struct ChatGPTTabView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
-    @StateObject private var sessionPool = ChatGPTProfileSessionPool()
+    @EnvironmentObject private var sessionPool: ChatGPTProfileSessionPool
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isSavingContext = false
     @State private var isPastingContext = false
     @State private var isAttachingFiles = false
+    @State private var isKeyboardVisible = false
     @State private var pendingPasteContextText: String?
     @State private var pendingAttachFileURLs: [URL] = []
     @State private var pendingPasteContextID = UUID()
@@ -19,29 +22,31 @@ struct ChatGPTTabView: View {
                 .ignoresSafeArea(.container, edges: .bottom)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
-            HStack(spacing: 10) {
-                Button(contextButtonTitle) {
-                    if let pendingPasteContextText {
-                        pastePendingContext(pendingPasteContextText)
-                    } else if !pendingAttachFileURLs.isEmpty {
-                        attachPendingFiles(pendingAttachFileURLs)
-                    } else {
-                        saveCurrentChatToMemory()
+            if !isKeyboardVisible {
+                HStack(spacing: 10) {
+                    Button(contextButtonTitle) {
+                        if let pendingPasteContextText {
+                            pastePendingContext(pendingPasteContextText)
+                        } else if !pendingAttachFileURLs.isEmpty {
+                            attachPendingFiles(pendingAttachFileURLs)
+                        } else {
+                            saveCurrentChatToMemory()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSavingContext || isPastingContext || isAttachingFiles)
+
+                    CircleIconButton(systemImage: "stop.circle", accessibilityLabel: "Stop ChatGPT activity", accessibilityHint: "Stops current WebView activity") {
+                        webViewStore.stopCurrentActivity()
+                    }
+
+                    CircleIconButton(systemImage: "arrow.clockwise", accessibilityLabel: "Reload ChatGPT session", accessibilityHint: "Reloads the current WebView page") {
+                        webViewStore.reloadCurrentSession()
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSavingContext || isPastingContext || isAttachingFiles)
-
-                CircleIconButton(systemImage: "stop.circle", accessibilityLabel: "Stop ChatGPT activity", accessibilityHint: "Stops current WebView activity") {
-                    webViewStore.stopCurrentActivity()
-                }
-
-                CircleIconButton(systemImage: "arrow.clockwise", accessibilityLabel: "Reload ChatGPT session", accessibilityHint: "Reloads the current WebView page") {
-                    webViewStore.reloadCurrentSession()
-                }
+                .padding(.top, 12)
+                .padding(.horizontal, 12)
             }
-            .padding(.top, 12)
-            .padding(.horizontal, 12)
         }
         .onAppear {
             lastProfileID = profileManager.activeProfileID
@@ -55,6 +60,16 @@ struct ChatGPTTabView: View {
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
             handlePendingMemoryStart()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            guard newPhase == .inactive || newPhase == .background else { return }
+            persistAllLiveProfileSessions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            setTypingPriority(true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            setTypingPriority(false)
         }
     }
 
@@ -75,6 +90,11 @@ struct ChatGPTTabView: View {
         return isSavingContext ? "Saving" : "Save Context"
     }
 
+    private func setTypingPriority(_ isTyping: Bool) {
+        isKeyboardVisible = isTyping
+        sessionPool.setTypingPriority(isTyping, profileID: profileManager.activeProfileID)
+    }
+
     private func handleActiveProfileAppearance() {
         guard profileManager.activeProfile.kind == .guest else { return }
         Task { @MainActor in
@@ -88,6 +108,9 @@ struct ChatGPTTabView: View {
     private func handleProfileChange(from previousProfileID: String) {
         let activeProfile = profileManager.activeProfile
 
+        sessionPool.setTypingPriority(false, profileID: previousProfileID)
+        sessionPool.setTypingPriority(isKeyboardVisible, profileID: activeProfile.id)
+
         Task { @MainActor in
             await sessionPool.persistSession(profileID: previousProfileID)
 
@@ -97,6 +120,12 @@ struct ChatGPTTabView: View {
                     onDetectedDisplayName: { _, _ in }
                 )
             }
+        }
+    }
+
+    private func persistAllLiveProfileSessions() {
+        Task { @MainActor in
+            await sessionPool.persistAllSessions()
         }
     }
 
@@ -163,6 +192,8 @@ struct ChatGPTTabView: View {
             for _ in 0..<120 {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard pendingPasteContextID == id, pendingPasteContextText != nil else { return }
+                guard !isKeyboardVisible else { continue }
+
                 let currentUserMessages = await webViewStore.userMessageCount()
                 if currentUserMessages > baselineUserMessages {
                     pendingPasteContextText = nil
