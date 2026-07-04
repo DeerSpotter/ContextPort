@@ -21,8 +21,30 @@ private struct GitHubLatestRelease: Decodable {
 @MainActor
 final class AppUpdateChecker: ObservableObject {
     @Published var availableUpdate: AppUpdate?
+    @Published var checkForUpdatesOnStart: Bool {
+        didSet {
+            UserDefaults.standard.set(checkForUpdatesOnStart, forKey: Self.checkOnStartKey)
+        }
+    }
 
+    private static let checkOnStartKey = "CheckForUpdatesOnStart"
     private let latestReleaseURL = URL(string: "https://api.github.com/repos/DeerSpotter/ChatGPT-WebView/releases/latest")!
+
+    init() {
+        if UserDefaults.standard.object(forKey: Self.checkOnStartKey) == nil {
+            checkForUpdatesOnStart = true
+        } else {
+            checkForUpdatesOnStart = UserDefaults.standard.bool(forKey: Self.checkOnStartKey)
+        }
+    }
+
+    func checkForUpdateOnStartup() async {
+        guard checkForUpdatesOnStart else {
+            return
+        }
+
+        await checkForUpdate()
+    }
 
     func checkForUpdate() async {
         let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
