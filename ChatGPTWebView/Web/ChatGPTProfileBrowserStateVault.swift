@@ -64,6 +64,8 @@ final class ChatGPTProfileBrowserStateVault {
         guard !origin.isEmpty else { return }
 
         var state = load(profileID: profileID)
+        guard state.sessionStatus != .loggedOut else { return }
+
         state.origins[origin] = ChatGPTProfileOriginBrowserState(localStorage: localStorage)
         state.lastURL = lastURL ?? state.lastURL
         state.capturedAt = Date()
@@ -78,6 +80,13 @@ final class ChatGPTProfileBrowserStateVault {
             capturedAt: Date(),
             sessionStatus: .loggedOut
         )
+        write(state, profileID: profileID)
+    }
+
+    func markActive(profileID: String) {
+        var state = load(profileID: profileID)
+        state.sessionStatus = .active
+        state.capturedAt = Date()
         write(state, profileID: profileID)
     }
 
