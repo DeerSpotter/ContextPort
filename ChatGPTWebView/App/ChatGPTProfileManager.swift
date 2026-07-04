@@ -26,22 +26,34 @@ final class ChatGPTProfileManager: ObservableObject {
     @Published private(set) var primaryDisplayName: String
     @Published var activeProfileID: String {
         didSet {
-            UserDefaults.standard.set(activeProfileID, forKey: Self.activeProfileKey)
+            persistStartupProfileIfNeeded(activeProfileID)
         }
     }
 
     private static let savedProfilesKey = "ChatGPTSavedProfiles"
-    private static let activeProfileKey = "ChatGPTActiveProfileID"
+    private static let lastPersistentProfileKey = "ChatGPTLastPersistentProfileID"
+    private static let legacyActiveProfileKey = "ChatGPTActiveProfileID"
     private static let primaryDisplayNameKey = "ChatGPTPrimaryProfileDisplayName"
 
     init() {
-        primaryDisplayName = UserDefaults.standard.string(forKey: Self.primaryDisplayNameKey) ?? "Current User"
-        activeProfileID = UserDefaults.standard.string(forKey: Self.activeProfileKey) ?? ChatGPTProfile.primaryID
+        let defaults = UserDefaults.standard
+        primaryDisplayName = defaults.string(forKey: Self.primaryDisplayNameKey) ?? "Current User"
+
+        let restoredProfileID = defaults.string(forKey: Self.lastPersistentProfileKey)
+            ?? defaults.string(forKey: Self.legacyActiveProfileKey)
+            ?? ChatGPTProfile.primaryID
+
+        activeProfileID = restoredProfileID == ChatGPTProfile.guestID
+            ? ChatGPTProfile.primaryID
+            : restoredProfileID
+
         loadSavedProfiles()
 
-        if profile(withID: activeProfileID) == nil {
+        if profile(withID: activeProfileID) == nil || activeProfileID == ChatGPTProfile.guestID {
             activeProfileID = ChatGPTProfile.primaryID
         }
+
+        persistStartupProfileIfNeeded(activeProfileID)
     }
 
     var primaryProfile: ChatGPTProfile {
@@ -98,6 +110,16 @@ final class ChatGPTProfileManager: ObservableObject {
 
         savedProfiles[index].displayName = name
         saveSavedProfiles()
+    }
+
+    private func persistStartupProfileIfNeeded(_ profileID: String) {
+        guard profileID != ChatGPTProfile.guestID else {
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        defaults.set(profileID, forKey: Self.lastPersistentProfileKey)
+        defaults.set(profileID, forKey: Self.legacyActiveProfileKey)
     }
 
     private func loadSavedProfiles() {
