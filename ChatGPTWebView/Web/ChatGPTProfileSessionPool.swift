@@ -28,6 +28,12 @@ final class ChatGPTProfileSessionPool: ObservableObject {
         await store.persistProfileSession()
     }
 
+    func persistAllSessions() async {
+        for store in stores.values {
+            await store.persistProfileSession()
+        }
+    }
+
     func resetGuest(
         profile: ChatGPTProfile,
         onDetectedDisplayName: @escaping (String, String) -> Void
