@@ -22,6 +22,7 @@ final class ChatGPTWebViewStore: ObservableObject {
     private var didPrepareInitialLoad = false
     private var didDetectDisplayName = false
     private var explicitLogoutDetected = false
+    private var sessionMutationGeneration = 0
     private var delayedCaptureTask: Task<Void, Never>?
 
     init(
@@ -168,6 +169,7 @@ final class ChatGPTWebViewStore: ObservableObject {
     private func handleExplicitLogoutDetected() {
         guard profile.kind == .saved else { return }
 
+        sessionMutationGeneration += 1
         explicitLogoutDetected = true
         didDetectDisplayName = false
         delayedCaptureTask?.cancel()
@@ -199,52 +201,54 @@ final class ChatGPTWebViewStore: ObservableObject {
                 return
             }
 
+            sessionMutationGeneration += 1
+            browserStateVault.markActive(profileID: profile.id)
             explicitLogoutDetected = false
             didDetectDisplayName = true
             onDetectedDisplayName(profile.id, detectedDisplayName)
         }
 
+        let captureGeneration = sessionMutationGeneration
+
         if profile.kind == .saved {
             let cookies = await allCookies()
+            guard captureGeneration == sessionMutationGeneration, !explicitLogoutDetected else {
+                return
+            }
+
             let browserState = await captureCurrentBrowserState()
-            await persistSavedProfileSnapshot(cookies: cookies, browserState: browserState)
+            guard captureGeneration == sessionMutationGeneration, !explicitLogoutDetected else {
+                return
+            }
+
+            cookieVault.save(cookies, profileID: profile.id)
+            if let browserState {
+                browserStateVault.save(
+                    origin: browserState.origin,
+                    localStorage: browserState.localStorage,
+                    lastURL: browserState.lastURL,
+                    profileID: profile.id
+                )
+            }
         }
 
         guard profile.kind != .guest, !didDetectDisplayName else {
             return
         }
 
-        let displayName = detectedDisplayName ?? await detectCurrentAccountDisplayName()
+        let displayName: String?
+        if let detectedDisplayName {
+            displayName = detectedDisplayName
+        } else {
+            displayName = await detectCurrentAccountDisplayName()
+        }
+
         guard let displayName, !displayName.isEmpty else {
             return
         }
 
         didDetectDisplayName = true
         onDetectedDisplayName(profile.id, displayName)
-    }
-
-    private func persistSavedProfileSnapshot(
-        cookies: [HTTPCookie],
-        browserState: CapturedBrowserState?
-    ) async {
-        let profileID = profile.id
-        let cookieVault = self.cookieVault
-        let browserStateVault = self.browserStateVault
-
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                cookieVault.save(cookies, profileID: profileID)
-                if let browserState {
-                    browserStateVault.save(
-                        origin: browserState.origin,
-                        localStorage: browserState.localStorage,
-                        lastURL: browserState.lastURL,
-                        profileID: profileID
-                    )
-                }
-                continuation.resume()
-            }
-        }
     }
 
     private func restoreSavedProfileCookies() async {
@@ -394,14 +398,14 @@ final class ChatGPTWebViewStore: ObservableObject {
           : null;
         if (!target) return;
 
-        const label = normalize([
+        const labels = [
           target.innerText,
           target.textContent,
           target.getAttribute('aria-label'),
           target.getAttribute('title')
-        ].filter(Boolean).join(' '));
+        ].filter(Boolean).map(normalize);
 
-        if (!/^(log\s*out|logout|sign\s*out)$/.test(label)) return;
+        if (!labels.some((label) => /^(log\s*out|logout|sign\s*out)$/.test(label))) return;
         try {
           window.webkit.messageHandlers.chatGPTProfileLogout.postMessage('logout');
         } catch (_) {}
