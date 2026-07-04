@@ -92,6 +92,28 @@ final class ChatGPTProfileManager: ObservableObject {
         return profile
     }
 
+    func removeSavedProfile(_ profile: ChatGPTProfile) {
+        guard profile.kind == .saved,
+              savedProfiles.contains(where: { $0.id == profile.id }) else {
+            return
+        }
+
+        savedProfiles.removeAll { $0.id == profile.id }
+        saveSavedProfiles()
+
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: Self.lastPersistentProfileKey) == profile.id {
+            defaults.set(ChatGPTProfile.primaryID, forKey: Self.lastPersistentProfileKey)
+        }
+        if defaults.string(forKey: Self.legacyActiveProfileKey) == profile.id {
+            defaults.set(ChatGPTProfile.primaryID, forKey: Self.legacyActiveProfileKey)
+        }
+
+        if activeProfileID == profile.id {
+            activeProfileID = ChatGPTProfile.primaryID
+        }
+    }
+
     func updateDetectedDisplayName(_ value: String, for profileID: String) {
         let name = cleanedDisplayName(value)
         guard !name.isEmpty else { return }
