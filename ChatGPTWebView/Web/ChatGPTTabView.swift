@@ -233,18 +233,15 @@ struct AIChatTabView: View {
 
         Task { @MainActor in
             defer { isAttachingFiles = false }
+            let memoryAttachWorked = await webViewStore.injectFilesIntoChatGPTUpload(urls)
 
-            let attachedCount = await webViewStore.injectPendingFilesSequentially(urls)
-            let remainingURLs = Array(urls.dropFirst(attachedCount))
-            pendingAttachFileURLs = remainingURLs
-            webViewStore.preparePendingUploadURLs(remainingURLs)
+            pendingAttachFileURLs = []
+            webViewStore.preparePendingUploadURLs([])
 
-            if attachedCount == urls.count {
-                appModel.statusMessage = "Attached all \(attachedCount) context files from app Memory to \(provider.displayName). Review the new chat before sending."
-            } else if attachedCount > 0 {
-                appModel.statusMessage = "Attached \(attachedCount) of \(urls.count) context files to \(provider.displayName). \(remainingURLs.count) remaining. Tap Attach Files again to continue."
+            if memoryAttachWorked {
+                appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
             } else {
-                appModel.statusMessage = "Direct memory attach did not complete in \(provider.displayName). Tap Attach Files again after the composer finishes loading."
+                appModel.statusMessage = "Context bundle attach was attempted in \(provider.displayName). Save Context is available again. Return to Memory to retry the bundle if needed."
             }
         }
     }
