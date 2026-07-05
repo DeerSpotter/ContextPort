@@ -22,11 +22,11 @@ struct MemoryContextBundle {
 
     func statusMessage(for providerName: String) -> String {
         if format.injectsMarkdownText {
-            return "\(selectedCount) Memory \(selectedCount == 1 ? "entry is" : "entries are") ready for \(providerName). Tap Paste Context to insert the combined context."
+            return "\(selectedCount) Memory \(selectedCount == 1 ? \"entry is\" : \"entries are\") ready for \(providerName). Tap Paste Context to insert the combined context."
         }
 
         let names = fileURLs.map(\.lastPathComponent).joined(separator: ", ")
-        return "\(selectedCount) Memory \(selectedCount == 1 ? "entry is" : "entries are") ready for \(providerName): \(names)."
+        return "\(selectedCount) Memory \(selectedCount == 1 ? \"entry is\" : \"entries are\") ready for \(providerName): \(names)."
     }
 }
 
@@ -86,17 +86,30 @@ final class MemoryContextBundleBuilder {
     private static func combinedMarkdown(for entries: [LocalMemoryEntry], store: LocalMemoryStore) -> String {
         let formatter = ISO8601DateFormatter()
         let sections = entries.enumerated().map { index, entry in
-            let markdown = store.markdownText(for: entry) ?? entry.content
-            let messageLine = entry.messageCount.map { "Messages: \($0)" } ?? "Messages: unknown"
+            let revisionSections = entry.orderedRevisions.map { revision in
+                let markdown = store.markdownText(for: revision, in: entry)
+                    ?? "_Revision content is unavailable on this device._"
+                let messageLine = revision.messageCount.map { "Messages: \($0)" } ?? "Messages: unknown"
+                return """
+                ## Revision \(revision.number)
+
+                Source: \(revision.source)
+                Saved: \(formatter.string(from: revision.createdAt))
+                \(messageLine)
+
+                \(markdown)
+                """
+            }
+
             return """
             # Memory \(index + 1): \(entry.title)
 
             Project: \(entry.projectName)
-            Source: \(entry.source)
-            Saved: \(formatter.string(from: entry.createdAt))
-            \(messageLine)
+            Created: \(formatter.string(from: entry.createdAt))
+            Updated: \(formatter.string(from: entry.updatedAt))
+            Revisions: \(entry.revisionCount)
 
-            \(markdown)
+            \(revisionSections.joined(separator: "\n\n---\n\n"))
             """
         }
 
@@ -106,7 +119,7 @@ final class MemoryContextBundleBuilder {
         Selected Memories: \(entries.count)
         Generated: \(formatter.string(from: Date()))
 
-        Current instructions override older context. Treat the selected memories as historical project context unless the user explicitly says otherwise.
+        Current instructions override older context. Treat the selected memories and their ordered revisions as historical project context unless the user explicitly says otherwise.
 
         ---
 
@@ -122,18 +135,36 @@ final class MemoryContextBundleBuilder {
         let output = PDFDocument()
 
         for entry in entries {
-            if let sourceURL = store.pdfURL(for: entry),
-               let sourceDocument = PDFDocument(url: sourceURL) {
-                appendPages(from: sourceDocument, to: output)
-                continue
-            }
+            for revision in entry.orderedRevisions {
+                if let sourceURL = store.pdfURL(for: revision),
+                   let sourceDocument = PDFDocument(url: sourceURL) {
+                    appendPages(from: sourceDocument, to: output)
+                    continue
+                }
 
-            let fallbackURL = bundleRoot.appendingPathComponent("fallback-\(entry.id.uuidString).pdf")
-            try LocalMemoryPDFRenderer.render(entry: entry, to: fallbackURL)
-            if let fallbackDocument = PDFDocument(url: fallbackURL) {
-                appendPages(from: fallbackDocument, to: output)
+                guard let markdown = store.markdownText(for: revision, in: entry) else {
+                    continue
+                }
+
+                let fallbackURL = bundleRoot.appendingPathComponent("fallback-\(revision.id.uuidString).pdf")
+                let fallbackEntry = LocalMemoryEntry(
+                    projectName: entry.projectName,
+                    title: "\(entry.title) · Revision \(revision.number)",
+                    content: markdown,
+                    source: revision.source,
+                    tags: entry.tags,
+                    importance: entry.importance,
+                    createdAt: revision.createdAt,
+                    updatedAt: revision.createdAt,
+                    messageCount: revision.messageCount,
+                    exportedAt: revision.exportedAt
+                )
+                try LocalMemoryPDFRenderer.render(entry: fallbackEntry, to: fallbackURL)
+                if let fallbackDocument = PDFDocument(url: fallbackURL) {
+                    appendPages(from: fallbackDocument, to: output)
+                }
+                try? fileManager.removeItem(at: fallbackURL)
             }
-            try? fileManager.removeItem(at: fallbackURL)
         }
 
         if output.pageCount == 0 {
