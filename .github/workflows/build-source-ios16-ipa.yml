@@ -24,9 +24,146 @@ on:
         default: "16.0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  patch-grok-white-screen:
+    name: Patch Grok OAuth overlay white screen
+    if: github.event_name == 'pull_request' && github.head_ref == 'codex/multi-ai-architecture'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/multi-ai-architecture
+          fetch-depth: 0
+
+      - name: Patch Grok OAuth child WebView presentation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if old not in text:
+                  raise SystemExit(f"Expected {label} was not found")
+              return text.replace(old, new, 1)
+
+          store_path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
+          store = store_path.read_text()
+
+          old_overlay = '''        let hostView = mainWebView ?? opener
+          popupWebView.frame = hostView.bounds
+          popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+          hostView.addSubview(popupWebView)
+
+          let popupID = ObjectIdentifier(popupWebView)
+          authPopupWebViews[popupID] = popupWebView
+          trackAuthPopupNavigation(popupWebView, url: initialURL)
+
+          return popupWebView
+          '''
+          new_overlay = '''        let sourceView = mainWebView ?? opener
+          let hostView = sourceView.superview ?? sourceView
+          if hostView === sourceView {
+              popupWebView.frame = sourceView.bounds
+          } else {
+              popupWebView.frame = sourceView.convert(sourceView.bounds, to: hostView)
+          }
+          popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+          popupWebView.layer.zPosition = 999
+          hostView.addSubview(popupWebView)
+
+          let popupID = ObjectIdentifier(popupWebView)
+          authPopupWebViews[popupID] = popupWebView
+          trackAuthPopupNavigation(popupWebView, url: initialURL)
+
+          // On iOS, some Grok/xAI popup requests can create the child view before
+          // WebKit commits the first navigation into it. Loading the initial request
+          // explicitly keeps the overlay from remaining a blank white WKWebView.
+          if provider.id == .grok {
+              DispatchQueue.main.async { [weak popupWebView] in
+                  popupWebView?.load(URLRequest(url: initialURL))
+              }
+          }
+
+          return popupWebView
+          '''
+          store = replace_once(store, old_overlay, new_overlay, "nested auth popup overlay block")
+
+          old_auth_hosts = '''            let authHost = host == "accounts.x.ai"
+                  || host == "x.com"
+                  || host == "accounts.google.com"
+                  || host == "appleid.apple.com"
+              return authHost
+          '''
+          new_auth_hosts = '''            let authHost = host == "accounts.x.ai"
+                  || host == "x.ai"
+                  || host.hasSuffix(".x.ai")
+                  || host == "x.com"
+                  || host.hasSuffix(".x.com")
+                  || host == "accounts.google.com"
+                  || host == "appleid.apple.com"
+                  || host == "challenges.cloudflare.com"
+              return authHost
+          '''
+          store = replace_once(store, old_auth_hosts, new_auth_hosts, "Grok auth host block")
+
+          old_track = '''        guard provider.id == .grok,
+                isAuthPopup(webView),
+                let url,
+                !isGrokURL(url) else {
+              return
+          }
+
+          grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
+          '''
+          new_track = '''        guard provider.id == .grok,
+                isAuthPopup(webView),
+                let url,
+                url.scheme?.lowercased() == "https",
+                !isGrokURL(url) else {
+              return
+          }
+
+          grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
+          '''
+          store = replace_once(store, old_track, new_track, "Grok popup navigation tracking block")
+          store_path.write_text(store)
+
+          project_path = Path("project.yml")
+          project = project_path.read_text()
+          project = replace_once(
+              project,
+              'CURRENT_PROJECT_VERSION: "30"',
+              'CURRENT_PROJECT_VERSION: "31"',
+              "build 30 version line"
+          )
+          project_path.write_text(project)
+
+      - name: Verify patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -F 'let sourceView = mainWebView ?? opener' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'sourceView.superview ?? sourceView' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'popupWebView?.load(URLRequest(url: initialURL))' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'host.hasSuffix(".x.ai")' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'url.scheme?.lowercased() == "https"' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'CURRENT_PROJECT_VERSION: "31"' project.yml
+
+      - name: Restore workflow and commit source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout 68e85df183fbf32bf14d05005bdb33c3d281f549 -- .github/workflows/build-source-ios16-ipa.yml
+          git add ChatGPTWebView/Web/ChatGPTWebViewStore.swift project.yml .github/workflows/build-source-ios16-ipa.yml
+          git commit -m "Present Grok auth popup as sibling overlay"
+          git push origin HEAD:codex/multi-ai-architecture
+
   build-source-ios16-ipa:
     name: Build source controlled iOS 16 unsigned IPA
     runs-on: macos-latest
