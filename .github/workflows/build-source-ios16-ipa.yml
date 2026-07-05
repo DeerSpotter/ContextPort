@@ -51,84 +51,77 @@ jobs:
 
           store_path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
           store = store_path.read_text()
+          lines = store.splitlines(keepends=True)
 
-          old_overlay = '''        let hostView = mainWebView ?? opener
-          popupWebView.frame = hostView.bounds
-          popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-          hostView.addSubview(popupWebView)
+          host_index = next((i for i, line in enumerate(lines) if "let hostView = mainWebView ?? opener" in line), None)
+          if host_index is None:
+              raise SystemExit("Expected nested auth popup host line was not found")
 
-          let popupID = ObjectIdentifier(popupWebView)
-          authPopupWebViews[popupID] = popupWebView
-          trackAuthPopupNavigation(popupWebView, url: initialURL)
+          return_index = next((i for i in range(host_index, len(lines)) if "return popupWebView" in lines[i]), None)
+          if return_index is None:
+              raise SystemExit("Expected auth popup return line was not found")
 
-          return popupWebView
-          '''
-          new_overlay = '''        let sourceView = mainWebView ?? opener
-          let hostView = sourceView.superview ?? sourceView
-          if hostView === sourceView {
-              popupWebView.frame = sourceView.bounds
-          } else {
-              popupWebView.frame = sourceView.convert(sourceView.bounds, to: hostView)
-          }
-          popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-          popupWebView.layer.zPosition = 999
-          hostView.addSubview(popupWebView)
+          indent = lines[host_index].split("let hostView", 1)[0]
+          replacement = [
+              f"{indent}let sourceView = mainWebView ?? opener\n",
+              f"{indent}let hostView = sourceView.superview ?? sourceView\n",
+              f"{indent}if hostView === sourceView {{\n",
+              f"{indent}    popupWebView.frame = sourceView.bounds\n",
+              f"{indent}}} else {{\n",
+              f"{indent}    popupWebView.frame = sourceView.convert(sourceView.bounds, to: hostView)\n",
+              f"{indent}}}\n",
+              f"{indent}popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n",
+              f"{indent}popupWebView.layer.zPosition = 999\n",
+              f"{indent}hostView.addSubview(popupWebView)\n",
+              "\n",
+              f"{indent}let popupID = ObjectIdentifier(popupWebView)\n",
+              f"{indent}authPopupWebViews[popupID] = popupWebView\n",
+              f"{indent}trackAuthPopupNavigation(popupWebView, url: initialURL)\n",
+              "\n",
+              f"{indent}// On iOS, some Grok/xAI popup requests can create the child view before\n",
+              f"{indent}// WebKit commits the first navigation into it. Loading the initial request\n",
+              f"{indent}// explicitly keeps the overlay from remaining a blank white WKWebView.\n",
+              f"{indent}if provider.id == .grok {{\n",
+              f"{indent}    DispatchQueue.main.async {{ [weak popupWebView] in\n",
+              f"{indent}        popupWebView?.load(URLRequest(url: initialURL))\n",
+              f"{indent}    }}\n",
+              f"{indent}}}\n",
+              "\n",
+              f"{indent}return popupWebView\n",
+          ]
+          lines = lines[:host_index] + replacement + lines[return_index + 1:]
+          store = "".join(lines)
 
-          let popupID = ObjectIdentifier(popupWebView)
-          authPopupWebViews[popupID] = popupWebView
-          trackAuthPopupNavigation(popupWebView, url: initialURL)
+          store = replace_once(
+              store,
+              'let authHost = host == "accounts.x.ai"\n'
+              '                || host == "x.com"\n'
+              '                || host == "accounts.google.com"\n'
+              '                || host == "appleid.apple.com"',
+              'let authHost = host == "accounts.x.ai"\n'
+              '                || host == "x.ai"\n'
+              '                || host.hasSuffix(".x.ai")\n'
+              '                || host == "x.com"\n'
+              '                || host.hasSuffix(".x.com")\n'
+              '                || host == "accounts.google.com"\n'
+              '                || host == "appleid.apple.com"\n'
+              '                || host == "challenges.cloudflare.com"',
+              "Grok auth host block"
+          )
 
-          // On iOS, some Grok/xAI popup requests can create the child view before
-          // WebKit commits the first navigation into it. Loading the initial request
-          // explicitly keeps the overlay from remaining a blank white WKWebView.
-          if provider.id == .grok {
-              DispatchQueue.main.async { [weak popupWebView] in
-                  popupWebView?.load(URLRequest(url: initialURL))
-              }
-          }
-
-          return popupWebView
-          '''
-          store = replace_once(store, old_overlay, new_overlay, "nested auth popup overlay block")
-
-          old_auth_hosts = '''            let authHost = host == "accounts.x.ai"
-                  || host == "x.com"
-                  || host == "accounts.google.com"
-                  || host == "appleid.apple.com"
-              return authHost
-          '''
-          new_auth_hosts = '''            let authHost = host == "accounts.x.ai"
-                  || host == "x.ai"
-                  || host.hasSuffix(".x.ai")
-                  || host == "x.com"
-                  || host.hasSuffix(".x.com")
-                  || host == "accounts.google.com"
-                  || host == "appleid.apple.com"
-                  || host == "challenges.cloudflare.com"
-              return authHost
-          '''
-          store = replace_once(store, old_auth_hosts, new_auth_hosts, "Grok auth host block")
-
-          old_track = '''        guard provider.id == .grok,
-                isAuthPopup(webView),
-                let url,
-                !isGrokURL(url) else {
-              return
-          }
-
-          grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
-          '''
-          new_track = '''        guard provider.id == .grok,
-                isAuthPopup(webView),
-                let url,
-                url.scheme?.lowercased() == "https",
-                !isGrokURL(url) else {
-              return
-          }
-
-          grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
-          '''
-          store = replace_once(store, old_track, new_track, "Grok popup navigation tracking block")
+          store = replace_once(
+              store,
+              'guard provider.id == .grok,\n'
+              '              isAuthPopup(webView),\n'
+              '              let url,\n'
+              '              !isGrokURL(url) else {',
+              'guard provider.id == .grok,\n'
+              '              isAuthPopup(webView),\n'
+              '              let url,\n'
+              '              url.scheme?.lowercased() == "https",\n'
+              '              !isGrokURL(url) else {',
+              "Grok popup navigation tracking block"
+          )
           store_path.write_text(store)
 
           project_path = Path("project.yml")
