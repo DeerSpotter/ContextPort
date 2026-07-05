@@ -28,7 +28,7 @@ final class AppUpdateChecker: ObservableObject {
     }
 
     private static let checkOnStartKey = "CheckForUpdatesOnStart"
-    private let latestReleaseURL = URL(string: "https://api.github.com/repos/DeerSpotter/ChatGPT-WebView/releases/latest")!
+    private let latestReleaseURL = URL(string: "https://api.github.com/repos/DeerSpotter/AI-Memory/releases/latest")!
 
     init() {
         if UserDefaults.standard.object(forKey: Self.checkOnStartKey) == nil {
@@ -56,7 +56,7 @@ final class AppUpdateChecker: ObservableObject {
                 timeoutInterval: 8
             )
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            request.setValue("ChatGPT-Memory-iOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+            request.setValue("AI-Memory-iOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
             request.setValue("2026-03-10", forHTTPHeaderField: "X-GitHub-Api-Version")
 
             let (data, response) = try await URLSession.shared.data(for: request)
