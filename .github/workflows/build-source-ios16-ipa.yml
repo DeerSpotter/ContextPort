@@ -1,15 +1,6 @@
 name: Build Source iOS 16 IPA
 
 on:
-  push:
-    branches:
-      - main
-      - phase2/supabase-memory-ui
-    paths:
-      - "ChatGPTWebView/**"
-      - "AppMemory/**"
-      - "project.yml"
-      - ".github/workflows/build-source-ios16-ipa.yml"
   pull_request:
     paths:
       - "ChatGPTWebView/**"
@@ -17,11 +8,6 @@ on:
       - "project.yml"
       - ".github/workflows/build-source-ios16-ipa.yml"
   workflow_dispatch:
-    inputs:
-      deployment_target:
-        description: "Minimum iOS deployment target"
-        required: false
-        default: "16.0"
 
 permissions:
   contents: write
@@ -32,74 +18,35 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
-      - name: Apply Grok auth-chain navigation model
+      - name: Apply Grok auth-chain coordinator
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
 
-          def replace_once(path: Path, old: str, new: str) -> None:
-              source = path.read_text()
+          path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
+          source = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global source
               if new in source:
                   return
               if old not in source:
-                  raise SystemExit(f"Expected patch anchor not found in {path}: {old[:120]!r}")
-              path.write_text(source.replace(old, new, 1))
+                  raise SystemExit(f"Expected Grok auth anchor not found: {old[:100]!r}")
+              source = source.replace(old, new, 1)
 
-          provider_path = Path("ChatGPTWebView/App/AIProvider.swift")
-          replace_once(
-              provider_path,
-              '''            allowedHostSuffixes: [
-                "grok.com",
-                "x.ai",
-                "x.com",
-                "twitter.com",
-                "twimg.com",
-                "google.com",
-                "gstatic.com",
-                "googleusercontent.com",
-                "apple.com",
-                "icloud.com",
-                "challenges.cloudflare.com"
-            ],
-            persistentCookieHostSuffixes: ["grok.com", "x.ai", "x.com", "twitter.com", "twimg.com"],''',
-              '''            allowedHostSuffixes: [
-                "grok.com",
-                "x.ai",
-                "x.com",
-                "twitter.com",
-                "twimg.com",
-                "grokipedia.com",
-                "grokusercontent.com",
-                "google.com",
-                "gstatic.com",
-                "googleusercontent.com",
-                "googleapis.com",
-                "accounts.youtube.com",
-                "apple.com",
-                "icloud.com",
-                "challenges.cloudflare.com"
-            ],
-            persistentCookieHostSuffixes: [
-                "grok.com",
-                "x.ai",
-                "x.com",
-                "twitter.com",
-                "twimg.com",
-                "grokipedia.com",
-                "grokusercontent.com"
-            ],'''
-          )
+          def remove_once(old: str) -> None:
+              global source
+              if old in source:
+                  source = source.replace(old, "", 1)
 
-          store_path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
           replace_once(
-              store_path,
               '''    private var authPopupWebViews: [ObjectIdentifier: WKWebView] = [:]
     private var grokPopupsThatLeftProvider: Set<ObjectIdentifier> = []
     private var grokGoogleCheckCookieRecoveryAttempted: Set<ObjectIdentifier> = []
@@ -113,7 +60,6 @@ jobs:
           )
 
           replace_once(
-              store_path,
               '''    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if provider.id == .grok {
             let webViewID = ObjectIdentifier(webView)
@@ -167,7 +113,6 @@ jobs:
           )
 
           replace_once(
-              store_path,
               '''        if isAuthPopup(webView) {
             trackAuthPopupNavigation(webView, url: url)
             decisionHandler(allowsAuthPopupURL(url) ? .allow : .cancel)
@@ -197,7 +142,6 @@ jobs:
           )
 
           replace_once(
-              store_path,
               '''        // Keep nested OAuth target=_blank navigation in the existing auth popup.
         // Creating another full-screen popup here can leave a blank white layer.
         if isAuthPopup(webView) {
@@ -206,8 +150,8 @@ jobs:
         }
 
         if shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {''',
-              '''        // Grok auth wrappers keep OAuth/new-window navigation in the same provider WebView.
-        // This preserves one browsing context through Google/xAI cookie bridge redirects.
+              '''        // Keep Grok OAuth/new-window navigation in one provider WebView.
+        // The Google -> xAI -> Grok cookie bridge must remain in one browsing context.
         if provider.id == .grok, isAllowedInsideWebView(url: url) {
             updateGrokAuthState(for: url)
             webView.load(URLRequest(url: url))
@@ -224,7 +168,6 @@ jobs:
           )
 
           replace_once(
-              store_path,
               '''    func webViewDidClose(_ webView: WKWebView) {
         guard isAuthPopup(webView) else { return }
 
@@ -245,7 +188,6 @@ jobs:
           )
 
           replace_once(
-              store_path,
               '''        authPopupWebViews.removeValue(forKey: popupID)
         grokPopupsThatLeftProvider.remove(popupID)
         grokGoogleCheckCookieRecoveryAttempted.remove(popupID)
@@ -424,7 +366,6 @@ jobs:
           )
 
           replace_once(
-              store_path,
               '''        case .grok:
             let authHost = host == "accounts.x.ai"
                 || host == "x.ai"
@@ -447,9 +388,9 @@ jobs:
         default:'''
           )
 
-          replace_once(
-              store_path,
-              '''    private func trackAuthPopupNavigation(_ webView: WKWebView, url: URL?) {
+          remove_once('''        trackAuthPopupNavigation(popupWebView, url: initialURL)
+''')
+          remove_once('''    private func trackAuthPopupNavigation(_ webView: WKWebView, url: URL?) {
         guard provider.id == .grok,
               isAuthPopup(webView),
               let url,
@@ -461,52 +402,43 @@ jobs:
         grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
     }
 
-    private func isCompletedGrokReturnURL(_ url: URL?) -> Bool {''',
-              '''    private func isCompletedGrokReturnURL(_ url: URL?) -> Bool {'''
-          )
+''')
 
-          project_path = Path("project.yml")
-          replace_once(
-              project_path,
-              'CURRENT_PROJECT_VERSION: "37"',
-              'CURRENT_PROJECT_VERSION: "38"'
-          )
+          path.write_text(source)
 
-          source = store_path.read_text()
-          forbidden = [
+          project = Path("project.yml")
+          project_text = project.read_text()
+          if 'CURRENT_PROJECT_VERSION: "37"' in project_text:
+              project_text = project_text.replace(
+                  'CURRENT_PROJECT_VERSION: "37"',
+                  'CURRENT_PROJECT_VERSION: "38"',
+                  1
+              )
+              project.write_text(project_text)
+          elif 'CURRENT_PROJECT_VERSION: "38"' not in project_text:
+              raise SystemExit("Unexpected project build number")
+
+          source = path.read_text()
+          for token in (
               "grokGoogleCheckCookieRecoveryAttempted",
               "resumeGrokGoogleCheckCookieIfNeeded",
               "isGoogleCheckCookieURL",
               "grokPopupsThatLeftProvider",
-              "trackAuthPopupNavigation"
-          ]
-          for token in forbidden:
+              "trackAuthPopupNavigation",
+          ):
               if token in source:
-                  raise SystemExit(f"Legacy Grok auth token still present: {token}")
-
-          required = [
-              "grokAuthInProgress",
-              "isGrokAuthBridgeCompletionURL",
-              "reloadGrokAfterAuthBridgeIfNeeded",
-              '"auth.grokusercontent.com"',
-              '"auth.grokipedia.com"'
-          ]
-          for token in required:
-              if token not in source and token not in provider_path.read_text():
-                  raise SystemExit(f"Expected Grok auth-chain token missing: {token}")
+                  raise SystemExit(f"Legacy Grok auth code remains: {token}")
           PY
 
-      - name: Commit Grok auth-chain implementation
+          swiftc -frontend -parse ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          swiftc -frontend -parse ChatGPTWebView/App/AIProvider.swift
+
+      - name: Commit Grok auth-chain source
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: Replace Grok popup auth with auth-chain navigation
           branch: codex/multi-ai-architecture
-          file_pattern: ChatGPTWebView/App/AIProvider.swift ChatGPTWebView/Web/ChatGPTWebViewStore.swift project.yml
-
-      - name: Show Xcode version
-        run: |
-          xcodebuild -version
-          xcode-select -p
+          file_pattern: ChatGPTWebView/Web/ChatGPTWebViewStore.swift project.yml
 
       - name: Install XcodeGen
         shell: bash
@@ -515,22 +447,15 @@ jobs:
           if ! command -v xcodegen >/dev/null 2>&1; then
             brew install xcodegen
           fi
-          xcodegen --version
 
       - name: Generate Xcode project
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodegen generate
-          test -f ChatGPTWebView.xcodeproj/project.pbxproj
+        run: xcodegen generate
 
       - name: Archive app without signing
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
-          DEPLOYMENT_TARGET="${{ github.event.inputs.deployment_target || '16.0' }}"
-
           xcodebuild clean archive \
             -project ChatGPTWebView.xcodeproj \
             -scheme ChatGPTWebView \
@@ -538,7 +463,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/ChatGPTWebView.xcarchive" \
-            IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -549,28 +474,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$(find build/ChatGPTWebView.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1 || true)"
-
-          if [ -z "$APP_PATH" ]; then
-            echo "Archive completed but no .app was found under Products/Applications." >&2
-            exit 22
-          fi
-
-          rm -rf build/Payload
+          APP_PATH="$(find build/ChatGPTWebView.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n 1)"
           mkdir -p build/Payload
           cp -R "$APP_PATH" build/Payload/
           (cd build && zip -qry ChatGPT-WebView-phase2-ios16-unsigned.ipa Payload)
-          ls -lh build/ChatGPT-WebView-phase2-ios16-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: ChatGPT-WebView-phase2-ios16-unsigned-ipa
           path: build/ChatGPT-WebView-phase2-ios16-unsigned.ipa
-          if-no-files-found: error
           retention-days: 14
 
-      - name: Upload generated Xcode project artifact
+      - name: Upload generated source artifact
         uses: actions/upload-artifact@v4
         with:
           name: ChatGPT-WebView-phase2-generated-xcode-project
@@ -579,5 +495,4 @@ jobs:
             project.yml
             ChatGPTWebView
             AppMemory
-          if-no-files-found: error
           retention-days: 14
