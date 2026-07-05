@@ -90,8 +90,13 @@ struct LocalMemoryDetailView: View {
 }
 
 private struct LocalMemoryRevisionDetailView: View {
+    @EnvironmentObject private var appModel: AppModel
+
     let entry: LocalMemoryEntry
     let revision: LocalMemoryRevision
+
+    @State private var isExporting = false
+    @State private var exportShareItem: MemoryExportShareItem?
 
     private let store = LocalMemoryStore()
 
@@ -100,6 +105,23 @@ private struct LocalMemoryRevisionDetailView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text(entry.title)
                     .font(.title3.weight(.bold))
+
+                Button {
+                    exportRevision()
+                } label: {
+                    if isExporting {
+                        HStack {
+                            ProgressView()
+                            Text("Preparing Revision ZIP")
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        Label("Export Revision", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isExporting || !hasExportableFiles)
 
                 revisionInfo
 
@@ -136,6 +158,13 @@ private struct LocalMemoryRevisionDetailView: View {
         }
         .navigationTitle("Revision \(revision.number)")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $exportShareItem) { item in
+            MemoryExportShareSheet(url: item.url)
+        }
+    }
+
+    private var hasExportableFiles: Bool {
+        store.pdfURL(for: revision) != nil || store.markdownURL(for: revision) != nil
     }
 
     private var revisionInfo: some View {
@@ -155,6 +184,31 @@ private struct LocalMemoryRevisionDetailView: View {
         .font(.caption)
         .foregroundColor(.secondary)
         .textSelection(.enabled)
+    }
+
+    private func exportRevision() {
+        guard !isExporting, hasExportableFiles else { return }
+        let memory = entry
+        let selectedRevision = revision
+
+        isExporting = true
+        appModel.statusMessage = "Preparing Revision \(revision.number) ZIP..."
+
+        Task { @MainActor in
+            defer { isExporting = false }
+            do {
+                let url = try await Task.detached(priority: .userInitiated) {
+                    try MemoryExportArchiveBuilder().exportRevision(
+                        entry: memory,
+                        revision: selectedRevision
+                    )
+                }.value
+                exportShareItem = MemoryExportShareItem(url: url)
+                appModel.statusMessage = "Revision \(revision.number) ZIP is ready to share or save to Files."
+            } catch {
+                appModel.statusMessage = "Revision export failed: \(error.localizedDescription)"
+            }
+        }
     }
 }
 
