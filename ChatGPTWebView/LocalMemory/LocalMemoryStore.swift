@@ -135,6 +135,17 @@ final class LocalMemoryStore {
         try write(entries)
     }
 
+    func setFavorite(_ isFavorite: Bool, for entry: LocalMemoryEntry) throws {
+        var entries = try loadEntries()
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
+        entries[index].isFavorite = isFavorite
+        try write(entries)
+    }
+
+    func toggleFavorite(for entry: LocalMemoryEntry) throws {
+        try setFavorite(!entry.isFavorite, for: entry)
+    }
+
     func startNewChatContext(for entry: LocalMemoryEntry) -> String {
         ["Start a new chat using this saved ChatGPT memory bundle.", "", "Title: \(entry.title)", "Source: \(entry.source)", "PDF: \(entry.pdfFilename ?? "none")", "Markdown: \(entry.markdownFilename ?? "none")", "", "Use the PDF and Markdown saved in the app Memory tab as context for this new chat."].joined(separator: "\n")
     }
