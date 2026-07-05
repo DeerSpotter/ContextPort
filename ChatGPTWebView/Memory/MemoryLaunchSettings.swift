@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum MemorySharingFormat: String, CaseIterable, Identifiable {
+enum MemorySharingFormat: String, CaseIterable, Hashable, Identifiable {
     case askEveryTime = "ask_every_time"
     case pdfAndMarkdown = "pdf_and_markdown"
     case pdfOnly = "pdf_only"
