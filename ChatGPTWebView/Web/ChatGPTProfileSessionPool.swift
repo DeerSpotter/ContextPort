@@ -54,6 +54,15 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             return existing
         }
 
+        let navigationLabels = ["help", "help center", "support", "claude help center"]
+        let existingProfileName = profile.displayName
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if navigationLabels.contains(existingProfileName) {
+            onDetectedDisplayName(profile.id, "Current User")
+        }
+
         let cookieVault = ChatGPTProfileCookieVault()
         let browserStateVault = ChatGPTProfileBrowserStateVault()
         let storageProfileID = profile.storageID(for: provider.id)
@@ -97,8 +106,10 @@ final class ChatGPTProfileSessionPool: ObservableObject {
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased()
-                let navigationLabels = ["help", "help center", "support", "claude help center"]
-                guard !navigationLabels.contains(normalizedName) else { return }
+                if navigationLabels.contains(normalizedName) {
+                    onDetectedDisplayName(profileID, "Current User")
+                    return
+                }
                 onDetectedDisplayName(profileID, displayName)
             }
         )
