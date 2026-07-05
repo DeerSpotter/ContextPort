@@ -54,12 +54,53 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             return existing
         }
 
+        let cookieVault = ChatGPTProfileCookieVault()
+        let browserStateVault = ChatGPTProfileBrowserStateVault()
+        let storageProfileID = profile.storageID(for: provider.id)
+
+        // Reject a previously captured provider URL when the full authenticated URL rule
+        // no longer accepts it. This clears stale Claude help/support routes without
+        // discarding the provider cookie snapshot that may still contain a valid login.
+        if profile.kind != .guest,
+           let restoredURL = browserStateVault.lastURL(
+            profileID: storageProfileID,
+            allowedHostSuffixes: provider.authenticatedHostSuffixes
+           ),
+           !provider.isAuthenticatedContentURL(restoredURL) {
+            browserStateVault.delete(profileID: storageProfileID)
+        }
+
+        // ChatGPT Current User keeps the shared default WebKit store for upgrade/session
+        // compatibility. Other providers use the existing persistent-profile recovery
+        // layer over an isolated nonpersistent WebKit store so Google/Apple auth state
+        // cannot bleed between Claude, Gemini, and Grok Current User sessions.
+        let webViewProfile: ChatGPTProfile
+        if provider.id != .chatGPT, profile.kind == .primary {
+            webViewProfile = ChatGPTProfile(
+                id: profile.id,
+                displayName: profile.displayName,
+                kind: .saved
+            )
+        } else {
+            webViewProfile = profile
+        }
+
         let initialURL = profile.kind == .saved ? provider.loginURL : nil
         let store = ChatGPTWebViewStore(
             provider: provider,
             initialURL: initialURL,
-            profile: profile,
-            onDetectedDisplayName: onDetectedDisplayName
+            profile: webViewProfile,
+            cookieVault: cookieVault,
+            browserStateVault: browserStateVault,
+            onDetectedDisplayName: { profileID, displayName in
+                let normalizedName = displayName
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let navigationLabels = ["help", "help center", "support", "claude help center"]
+                guard !navigationLabels.contains(normalizedName) else { return }
+                onDetectedDisplayName(profileID, displayName)
+            }
         )
         stores[key] = store
         return store
