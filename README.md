@@ -1,6 +1,6 @@
 # ChatGPT WebView for iOS 16
 
-A lightweight iOS WebView wrapper for ChatGPT’s web app. Built with Swift and WKWebView, optimized for fast performance and speech-to-text microphone support on iOS 16.
+A lightweight iOS WebView AI memory shell built with Swift and WKWebView. The app keeps local conversation Memory while supporting provider scoped web sessions for ChatGPT, Claude, Gemini, and Grok.
 
 ## Current trust position
 
@@ -51,42 +51,76 @@ GitHub Actions artifacts are configured with a 14 day retention period. Publishi
 
 ## Current app direction
 
-The app is now focused on two tabs:
+The app keeps the lightweight two-tab experience:
 
-- `ChatGPT`
+- the currently selected AI provider
 - `Memory`
 
-The `Save Context` button in the ChatGPT tab extracts the current ChatGPT conversation from the rendered page, creates both Markdown and PDF, and stores both inside the app Memory vault under the chat title.
+The compact person button opens one combined AI and profile popup. The top strip selects ChatGPT, Claude, Gemini, or Grok. The rows below select Current User, Guest, or a saved login for that provider.
 
-The Memory tab is intentionally simple. It shows saved chat names only. Tap a name to open the saved chat memory, view the PDF, view the Markdown, or start a new chat from that saved memory. Swipe left on a saved chat name to delete it.
+The `Save Context` button extracts the current rendered conversation, creates both Markdown and PDF, and stores both inside the app Memory vault under the conversation title.
+
+The Memory tab remains intentionally simple. It shows saved chat names only. Tap a name to open the saved chat memory, view the PDF, view the Markdown, or start a new chat from that saved memory. Swipe left on a saved chat name to delete it.
 
 ## Features
 
-- Persistent ChatGPT WebView login
+- ChatGPT, Claude, Gemini, and Grok provider catalog
+- Provider scoped Current User, Guest, and saved login profiles
+- Independent provider/profile WebView sessions
+- Persistent Current User and saved login recovery
+- Session only Guest behavior per provider
+- Small `x` removal control for saved logins
+- Shared app wide local Memory
 - Safari 16+ User-Agent spoofing
 - Mic input support
 - Dark mode support
-- ChatGPT stop and refresh controls
-- Save Context button near the ChatGPT controls
-- Full rendered-chat extraction into Markdown
-- PDF rendering from the exported Markdown
+- Stop and refresh controls
+- Save Context button near the active AI controls
+- Rendered conversation extraction into Markdown
+- PDF rendering from exported Markdown
 - App Memory tab with saved chat names
 - Saved chat detail screen with PDF and Markdown
+- Direct in memory Paste Context and file attachment bridge
 - Swipe left deletion for saved chats
 - TrollStore compatibility
 - Manual or Xcode install
 
+## Multi AI session model
+
+```text
+Shared local Memory
+  -> Provider
+      -> Profile
+          -> WebView Session
+```
+
+Provider and account identity are intentionally separate.
+
+Session and browser recovery storage is namespaced as:
+
+```text
+<provider>::<profile>
+```
+
+This prevents provider sessions from colliding on common profile IDs such as `primary` and `guest`.
+
+Existing ChatGPT 2.2.2 profile metadata, Keychain cookies, and browser state are migrated into the new ChatGPT namespace on first use.
+
+See `docs/MULTI_AI_ARCHITECTURE.md` for the architecture and migration details.
+
 ## Memory behavior
 
 ```text
-ChatGPT tab
+Active AI tab
   -> Save Context
   -> extract visible conversation DOM
-  -> write PDF and Markdown into app Memory
+  -> write PDF and Markdown into shared app Memory
   -> Memory tab shows the saved chat title
   -> tap title to open PDF and Markdown
-  -> Start New Chat opens ChatGPT for continuation
+  -> Start New Chat opens the currently active AI provider for continuation
 ```
+
+Memory remains device local and app wide. It is not partitioned by provider, profile, or Guest state.
 
 The app does not require Supabase for this flow. Supabase and database experiments may remain in the repository for reference, but they are not part of the active two-tab user experience.
 
@@ -105,14 +139,14 @@ For published versions, the IPA attached to the GitHub Release is taken from the
 ## Build Requirements
 
 - Xcode 14+
-- Target iOS 15-16
+- Target iOS 16+
 - Swift 5.0+
 
 ## Installation
 
-1. Open this project in Xcode
-2. Choose your device or simulator
-3. Hit “Run” to build
+1. Open this project in Xcode.
+2. Choose your device or simulator.
+3. Run the app.
 
 ## License
 

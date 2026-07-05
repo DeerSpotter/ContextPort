@@ -4,7 +4,7 @@ struct MemoryTestView: View {
     @EnvironmentObject private var appModel: AppModel
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 if appModel.localMemoryEntries.isEmpty {
                     Text("No saved chats yet. Open the ChatGPT tab and tap Save Context.")

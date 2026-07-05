@@ -1,8 +1,9 @@
 import SwiftUI
 import UIKit
 
-struct ChatGPTTabView: View {
+struct AIChatTabView: View {
     @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var providerManager: AIProviderManager
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
     @EnvironmentObject private var sessionPool: ChatGPTProfileSessionPool
     @Environment(\.scenePhase) private var scenePhase
@@ -13,12 +14,13 @@ struct ChatGPTTabView: View {
     @State private var pendingPasteContextText: String?
     @State private var pendingAttachFileURLs: [URL] = []
     @State private var pendingPasteContextID = UUID()
+    @State private var lastProviderID = AIProviderID.chatGPT
     @State private var lastProfileID = ChatGPTProfile.primaryID
 
     var body: some View {
         ZStack(alignment: .top) {
             SecureChatGPTWebView(store: webViewStore)
-                .id(profileManager.activeProfileID)
+                .id(activeSessionID)
                 .ignoresSafeArea(.container, edges: .bottom)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
@@ -36,11 +38,19 @@ struct ChatGPTTabView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(isSavingContext || isPastingContext || isAttachingFiles)
 
-                    CircleIconButton(systemImage: "stop.circle", accessibilityLabel: "Stop ChatGPT activity", accessibilityHint: "Stops current WebView activity") {
+                    CircleIconButton(
+                        systemImage: "stop.circle",
+                        accessibilityLabel: "Stop \(provider.displayName) activity",
+                        accessibilityHint: "Stops current WebView activity"
+                    ) {
                         webViewStore.stopCurrentActivity()
                     }
 
-                    CircleIconButton(systemImage: "arrow.clockwise", accessibilityLabel: "Reload ChatGPT session", accessibilityHint: "Reloads the current WebView page") {
+                    CircleIconButton(
+                        systemImage: "arrow.clockwise",
+                        accessibilityLabel: "Reload \(provider.displayName) session",
+                        accessibilityHint: "Reloads the current WebView page"
+                    ) {
                         webViewStore.reloadCurrentSession()
                     }
                 }
@@ -49,14 +59,20 @@ struct ChatGPTTabView: View {
             }
         }
         .onAppear {
-            lastProfileID = profileManager.activeProfileID
-            handleActiveProfileAppearance()
+            lastProviderID = provider.id
+            lastProfileID = activeProfile.id
+            handleActiveSessionAppearance()
             handlePendingMemoryStart()
         }
-        .onChange(of: profileManager.activeProfileID) { newProfileID in
+        .onChange(of: activeSessionID) { _ in
+            let previousProviderID = lastProviderID
             let previousProfileID = lastProfileID
-            lastProfileID = newProfileID
-            handleProfileChange(from: previousProfileID)
+            lastProviderID = provider.id
+            lastProfileID = activeProfile.id
+            handleSessionChange(
+                fromProviderID: previousProviderID,
+                previousProfileID: previousProfileID
+            )
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
             handlePendingMemoryStart()
@@ -73,11 +89,29 @@ struct ChatGPTTabView: View {
         }
     }
 
+    private var provider: AIProvider {
+        providerManager.activeProvider
+    }
+
+    private var activeProfile: ChatGPTProfile {
+        profileManager.activeProfile(for: provider.id)
+    }
+
+    private var activeSessionID: String {
+        "\(provider.id.rawValue)::\(activeProfile.id)"
+    }
+
     private var webViewStore: ChatGPTWebViewStore {
-        sessionPool.store(
-            for: profileManager.activeProfile,
+        let providerID = provider.id
+        return sessionPool.store(
+            for: provider,
+            profile: activeProfile,
             onDetectedDisplayName: { profileID, displayName in
-                profileManager.updateDetectedDisplayName(displayName, for: profileID)
+                profileManager.updateDetectedDisplayName(
+                    displayName,
+                    for: profileID,
+                    providerID: providerID
+                )
             }
         )
     }
@@ -92,31 +126,53 @@ struct ChatGPTTabView: View {
 
     private func setTypingPriority(_ isTyping: Bool) {
         isKeyboardVisible = isTyping
-        sessionPool.setTypingPriority(isTyping, profileID: profileManager.activeProfileID)
+        sessionPool.setTypingPriority(
+            isTyping,
+            providerID: provider.id,
+            profileID: activeProfile.id
+        )
     }
 
-    private func handleActiveProfileAppearance() {
-        guard profileManager.activeProfile.kind == .guest else { return }
+    private func handleActiveSessionAppearance() {
+        guard activeProfile.kind == .guest else { return }
         Task { @MainActor in
             await sessionPool.resetGuest(
-                profile: profileManager.guestProfile,
+                provider: provider,
+                profile: activeProfile,
                 onDetectedDisplayName: { _, _ in }
             )
         }
     }
 
-    private func handleProfileChange(from previousProfileID: String) {
-        let activeProfile = profileManager.activeProfile
+    private func handleSessionChange(
+        fromProviderID previousProviderID: AIProviderID,
+        previousProfileID: String
+    ) {
+        let activeProvider = provider
+        let newActiveProfile = activeProfile
+        isKeyboardVisible = false
 
-        sessionPool.setTypingPriority(false, profileID: previousProfileID)
-        sessionPool.setTypingPriority(isKeyboardVisible, profileID: activeProfile.id)
+        sessionPool.setTypingPriority(
+            false,
+            providerID: previousProviderID,
+            profileID: previousProfileID
+        )
+        sessionPool.setTypingPriority(
+            false,
+            providerID: activeProvider.id,
+            profileID: newActiveProfile.id
+        )
 
         Task { @MainActor in
-            await sessionPool.persistSession(profileID: previousProfileID)
+            await sessionPool.persistSession(
+                providerID: previousProviderID,
+                profileID: previousProfileID
+            )
 
-            if activeProfile.kind == .guest {
+            if newActiveProfile.kind == .guest {
                 await sessionPool.resetGuest(
-                    profile: activeProfile,
+                    provider: activeProvider,
+                    profile: newActiveProfile,
                     onDetectedDisplayName: { _, _ in }
                 )
             }
@@ -140,12 +196,12 @@ struct ChatGPTTabView: View {
             pendingPasteContextText = composerText
             pendingAttachFileURLs = []
             pendingPasteContextID = UUID()
-            appModel.statusMessage = "Saved Markdown is ready. Tap Paste Context to insert it, or continue without it."
+            appModel.statusMessage = "Saved Markdown is ready for \(provider.displayName). Tap Paste Context to insert it, or continue without it."
             watchForConversationStartWithoutPaste(pendingPasteContextID)
         } else if !payload.fileURLs.isEmpty {
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextText = nil
-            appModel.statusMessage = "Files are ready. Tap Attach Files to attach from app Memory."
+            appModel.statusMessage = "Files are ready. Tap Attach Files to attach from app Memory to \(provider.displayName)."
         }
     }
 
@@ -159,9 +215,9 @@ struct ChatGPTTabView: View {
             if inserted {
                 pendingPasteContextText = nil
                 pendingPasteContextID = UUID()
-                appModel.statusMessage = "Pasted saved context. Review and send."
+                appModel.statusMessage = "Pasted saved context into \(provider.displayName). Review and send."
             } else {
-                appModel.statusMessage = "Could not paste yet. Wait for ChatGPT to finish loading, then tap Paste Context again."
+                appModel.statusMessage = "Could not paste yet. Wait for \(provider.displayName) to finish loading, then tap Paste Context again."
             }
         }
     }
@@ -177,9 +233,9 @@ struct ChatGPTTabView: View {
             pendingAttachFileURLs = []
 
             if memoryAttachWorked {
-                appModel.statusMessage = "Attached files from app Memory. Review the new chat before sending."
+                appModel.statusMessage = "Attached files from app Memory to \(provider.displayName). Review the new chat before sending."
             } else {
-                appModel.statusMessage = "Direct memory attach was attempted. If the file card did not appear, return to Memory and try again."
+                appModel.statusMessage = "Direct memory attach was attempted in \(provider.displayName). If the file card did not appear, return to Memory and try again."
             }
         }
     }
@@ -208,12 +264,20 @@ struct ChatGPTTabView: View {
     private func saveCurrentChatToMemory() {
         guard !isSavingContext else { return }
         isSavingContext = true
-        appModel.statusMessage = "Saving chat to Memory..."
+        appModel.statusMessage = "Saving \(provider.displayName) chat to Memory..."
         Task { @MainActor in
             defer { isSavingContext = false }
             do {
                 let export = try await webViewStore.exportCurrentConversation()
-                let result = try LocalMemoryStore().saveExportedConversation(projectName: appModel.selectedProject?.name ?? "ChatGPT-WebView", title: export.title, markdownText: export.markdown, pdfData: export.pdfData, sourceURL: export.sourceURL, messageCount: export.messageCount, exportedAt: export.exportedAt)
+                let result = try LocalMemoryStore().saveExportedConversation(
+                    projectName: appModel.selectedProject?.name ?? "ChatGPT-WebView",
+                    title: export.title,
+                    markdownText: export.markdown,
+                    pdfData: export.pdfData,
+                    sourceURL: export.sourceURL,
+                    messageCount: export.messageCount,
+                    exportedAt: export.exportedAt
+                )
                 appModel.reloadLocalMemory()
                 appModel.statusMessage = result.message
             } catch {
@@ -222,6 +286,8 @@ struct ChatGPTTabView: View {
         }
     }
 }
+
+typealias ChatGPTTabView = AIChatTabView
 
 private struct CircleIconButton: View {
     let systemImage: String

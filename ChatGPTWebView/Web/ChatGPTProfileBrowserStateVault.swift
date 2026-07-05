@@ -55,6 +55,19 @@ final class ChatGPTProfileBrowserStateVault {
         load(profileID: profileID).sessionStatus != .loggedOut
     }
 
+    func migrateLegacyProfileIfNeeded(legacyProfileID: String, profileID: String) {
+        guard legacyProfileID != profileID else { return }
+
+        let legacyURL = fileURL(profileID: legacyProfileID)
+        let newURL = fileURL(profileID: profileID)
+        guard !fileManager.fileExists(atPath: newURL.path),
+              fileManager.fileExists(atPath: legacyURL.path) else {
+            return
+        }
+
+        try? fileManager.copyItem(at: legacyURL, to: newURL)
+    }
+
     func save(
         origin: String,
         localStorage: [String: String],
@@ -91,13 +104,22 @@ final class ChatGPTProfileBrowserStateVault {
     }
 
     func lastURL(profileID: String) -> URL? {
+        lastURL(
+            profileID: profileID,
+            allowedHostSuffixes: AIProviderID.chatGPT.provider.authenticatedHostSuffixes
+        )
+    }
+
+    func lastURL(profileID: String, allowedHostSuffixes: [String]) -> URL? {
         let state = load(profileID: profileID)
         guard state.sessionStatus != .loggedOut,
               let value = state.lastURL,
               let url = URL(string: value),
               url.scheme?.lowercased() == "https",
               let host = url.host?.lowercased(),
-              host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") || host == "openai.com" || host.hasSuffix(".openai.com") else {
+              allowedHostSuffixes.contains(where: { suffix in
+                  host == suffix || host.hasSuffix("." + suffix)
+              }) else {
             return nil
         }
         return url

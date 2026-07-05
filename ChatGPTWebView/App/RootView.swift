@@ -3,21 +3,22 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var updateChecker: AppUpdateChecker
+    @EnvironmentObject private var providerManager: AIProviderManager
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
     @EnvironmentObject private var profileSessionPool: ChatGPTProfileSessionPool
     @Environment(\.openURL) private var openURL
-    @State private var selectedTab: AppTab = .chatgpt
+    @State private var selectedTab: AppTab = .assistant
     @State private var isShowingProfiles = false
     @State private var isShowingSettings = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ZStack {
-                ChatGPTTabView()
-                    .opacity(selectedTab == .chatgpt ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .chatgpt)
-                    .accessibilityHidden(selectedTab != .chatgpt)
-                    .zIndex(selectedTab == .chatgpt ? 1 : 0)
+                AIChatTabView()
+                    .opacity(selectedTab == .assistant ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .assistant)
+                    .accessibilityHidden(selectedTab != .assistant)
+                    .zIndex(selectedTab == .assistant ? 1 : 0)
 
                 MemoryTestView()
                     .opacity(selectedTab == .memory ? 1 : 0)
@@ -36,19 +37,25 @@ struct RootView: View {
                     }
                     .zIndex(2)
 
-                ProfilePickerPopup(
+                AIProfilePickerPopup(
+                    providerManager: providerManager,
                     profileManager: profileManager,
+                    onProviderSelected: { provider in
+                        providerManager.selectProvider(provider)
+                        selectedTab = .assistant
+                        isShowingProfiles = false
+                    },
                     onProfileSelected: { profile in
-                        profileManager.selectProfile(profile)
-                        selectedTab = .chatgpt
+                        profileManager.selectProfile(profile, for: providerManager.activeProviderID)
+                        selectedTab = .assistant
                         isShowingProfiles = false
                     },
                     onRemoveProfile: { profile in
-                        removeProfile(profile)
+                        removeProfile(profile, providerID: providerManager.activeProviderID)
                     },
                     onAddLogin: {
-                        _ = profileManager.addLoginProfile()
-                        selectedTab = .chatgpt
+                        _ = profileManager.addLoginProfile(for: providerManager.activeProviderID)
+                        selectedTab = .assistant
                         isShowingProfiles = false
                     }
                 )
@@ -59,6 +66,7 @@ struct RootView: View {
 
             CompactBottomSwitcher(
                 selectedTab: $selectedTab,
+                provider: providerManager.activeProvider,
                 onProfiles: {
                     isShowingProfiles.toggle()
                 },
@@ -70,7 +78,7 @@ struct RootView: View {
             .zIndex(4)
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
-            selectedTab = .chatgpt
+            selectedTab = .assistant
             isShowingProfiles = false
         }
         .sheet(isPresented: $isShowingSettings) {
@@ -89,36 +97,40 @@ struct RootView: View {
         }
     }
 
-    private func removeProfile(_ profile: ChatGPTProfile) {
+    private func removeProfile(_ profile: ChatGPTProfile, providerID: AIProviderID) {
         guard profile.kind == .saved else { return }
 
         Task { @MainActor in
-            await profileSessionPool.removeSavedProfileSession(profileID: profile.id)
-            profileManager.removeSavedProfile(profile)
-            selectedTab = .chatgpt
+            await profileSessionPool.removeSavedProfileSession(
+                providerID: providerID,
+                profileID: profile.id
+            )
+            profileManager.removeSavedProfile(profile, for: providerID)
+            selectedTab = .assistant
             isShowingProfiles = false
         }
     }
 }
 
 private enum AppTab: Hashable {
-    case chatgpt
+    case assistant
     case memory
 }
 
 private struct CompactBottomSwitcher: View {
     @Binding var selectedTab: AppTab
+    let provider: AIProvider
     let onProfiles: () -> Void
     let onSettings: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
             CompactTabButton(
-                title: "ChatGPT",
-                systemImage: "bubble.left.and.bubble.right.fill",
-                isSelected: selectedTab == .chatgpt
+                title: provider.displayName,
+                systemImage: provider.systemImage,
+                isSelected: selectedTab == .assistant
             ) {
-                selectedTab = .chatgpt
+                selectedTab = .assistant
             }
 
             CompactTabButton(
@@ -136,7 +148,7 @@ private struct CompactBottomSwitcher: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Profiles")
+            .accessibilityLabel("AI and profiles")
 
             Button(action: onSettings) {
                 Image(systemName: "line.3.horizontal")
@@ -154,18 +166,36 @@ private struct CompactBottomSwitcher: View {
     }
 }
 
-private struct ProfilePickerPopup: View {
+private struct AIProfilePickerPopup: View {
+    @ObservedObject var providerManager: AIProviderManager
     @ObservedObject var profileManager: ChatGPTProfileManager
+    let onProviderSelected: (AIProvider) -> Void
     let onProfileSelected: (ChatGPTProfile) -> Void
     let onRemoveProfile: (ChatGPTProfile) -> Void
     let onAddLogin: () -> Void
 
+    private var providerID: AIProviderID {
+        providerManager.activeProviderID
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            profileRow(profileManager.primaryProfile, title: primaryProfileTitle, removable: false)
-            profileRow(profileManager.guestProfile, title: "Guest", removable: false)
+            providerStrip
 
-            ForEach(profileManager.savedProfiles) { profile in
+            Divider()
+
+            profileRow(
+                profileManager.primaryProfile(for: providerID),
+                title: primaryProfileTitle,
+                removable: false
+            )
+            profileRow(
+                profileManager.guestProfile(for: providerID),
+                title: "Guest",
+                removable: false
+            )
+
+            ForEach(profileManager.savedProfiles(for: providerID)) { profile in
                 profileRow(profile, title: profile.displayName, removable: true)
             }
 
@@ -175,7 +205,7 @@ private struct ProfilePickerPopup: View {
                 HStack(spacing: 9) {
                     Image(systemName: "plus")
                         .frame(width: 18)
-                    Text("Add Login")
+                    Text("Add \(providerManager.activeProvider.displayName) Login")
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: 15, weight: .medium))
@@ -185,7 +215,7 @@ private struct ProfilePickerPopup: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(maxWidth: 300)
+        .frame(maxWidth: 340)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -194,10 +224,39 @@ private struct ProfilePickerPopup: View {
         .shadow(radius: 8)
     }
 
+    private var providerStrip: some View {
+        HStack(spacing: 0) {
+            ForEach(providerManager.providers) { provider in
+                Button {
+                    onProviderSelected(provider)
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: provider.systemImage)
+                            .font(.system(size: 14, weight: .semibold))
+                        Text(provider.displayName)
+                            .font(.system(size: 9, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .foregroundColor(
+                        providerManager.activeProviderID == provider.id
+                            ? .accentColor
+                            : .secondary
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(provider.displayName)
+            }
+        }
+    }
+
     private var primaryProfileTitle: String {
-        profileManager.primaryDisplayName == "Current User"
+        let displayName = profileManager.primaryDisplayName(for: providerID)
+        return displayName == "Current User"
             ? "Current User"
-            : "Current User: \(profileManager.primaryDisplayName)"
+            : "Current User: \(displayName)"
     }
 
     @ViewBuilder
@@ -207,7 +266,7 @@ private struct ProfilePickerPopup: View {
                 onProfileSelected(profile)
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: profileManager.activeProfileID == profile.id ? "checkmark" : "")
+                    Image(systemName: profileManager.activeProfileID(for: providerID) == profile.id ? "checkmark" : "")
                         .frame(width: 18)
                     Text(title)
                         .lineLimit(1)
@@ -250,6 +309,8 @@ private struct CompactTabButton: View {
                     .font(.system(size: 15, weight: .semibold))
                 Text(title)
                     .font(.system(size: 9, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             .frame(maxWidth: .infinity)
             .frame(height: 32)
