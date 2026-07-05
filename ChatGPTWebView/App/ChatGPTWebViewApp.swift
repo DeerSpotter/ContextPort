@@ -8,6 +8,7 @@ struct ChatGPTWebViewApp: App {
     @StateObject private var profileManager = ChatGPTProfileManager()
     @StateObject private var profileSessionPool = ChatGPTProfileSessionPool()
     @StateObject private var memoryLaunchSettings = MemoryLaunchSettings()
+    @StateObject private var chatPerformanceSettings = ChatPerformanceSettings()
 
     var body: some Scene {
         WindowGroup {
@@ -18,6 +19,15 @@ struct ChatGPTWebViewApp: App {
                 .environmentObject(profileManager)
                 .environmentObject(profileSessionPool)
                 .environmentObject(memoryLaunchSettings)
+                .environmentObject(chatPerformanceSettings)
+                .onAppear {
+                    profileSessionPool.updateChatPerformanceConfiguration(
+                        chatPerformanceSettings.configuration
+                    )
+                }
+                .onChange(of: chatPerformanceSettings.configuration) { configuration in
+                    profileSessionPool.updateChatPerformanceConfiguration(configuration)
+                }
                 .task {
                     await appModel.restoreSession()
                 }
