@@ -53,6 +53,9 @@ final class ChatGPTProfileSessionPool: ObservableObject {
         let key = AIProfileSessionKey(providerID: provider.id, profileID: profile.id)
         if let existing = stores[key] {
             existing.updateChatPerformanceConfiguration(chatPerformanceConfiguration)
+            existing.updateChatGPTMobileWebFallback(
+                chatPerformanceConfiguration.chatGPTMobileWebFallbackEnabled
+            )
             return existing
         }
 
@@ -116,6 +119,9 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             }
         )
         store.updateChatPerformanceConfiguration(chatPerformanceConfiguration)
+        store.updateChatGPTMobileWebFallback(
+            chatPerformanceConfiguration.chatGPTMobileWebFallbackEnabled
+        )
         stores[key] = store
         return store
     }
@@ -128,6 +134,7 @@ final class ChatGPTProfileSessionPool: ObservableObject {
         chatPerformanceConfiguration = configuration
         for store in stores.values {
             store.updateChatPerformanceConfiguration(configuration)
+            store.updateChatGPTMobileWebFallback(configuration.chatGPTMobileWebFallbackEnabled)
         }
     }
 
