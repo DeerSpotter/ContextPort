@@ -1,0 +1,526 @@
+name: Patch Provider OAuth Popups
+
+on:
+  push:
+    branches:
+      - codex/multi-ai-architecture
+    paths:
+      - ".github/workflows/patch-provider-oauth-popups.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-provider-oauth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/multi-ai-architecture
+          fetch-depth: 0
+
+      - name: Apply provider OAuth WebKit architecture
+        shell: python
+        run: |
+          from pathlib import Path
+
+          store_path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
+          store = store_path.read_text()
+
+          old_config = '''        let configuration = WKWebViewConfiguration()
+          configuration.websiteDataStore = profile.kind == .primary ? .default() : .nonPersistent()
+          configuration.allowsInlineMediaPlayback = true
+
+          if isPersistentProfile {
+          '''
+          new_config = '''        let configuration = WKWebViewConfiguration()
+          configuration.websiteDataStore = profile.kind == .primary ? .default() : .nonPersistent()
+          configuration.allowsInlineMediaPlayback = true
+          if provider.id == .claude || provider.id == .grok {
+              configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+          }
+
+          if isPersistentProfile {
+          '''
+          if old_config not in store:
+              raise SystemExit("Expected WKWebView configuration block was not found")
+          store = store.replace(old_config, new_config, 1)
+
+          old_attach = '''        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+          self.webView = webView
+
+          coordinator.navigationDidFinishHandler = { [weak self] _ in
+          '''
+          new_attach = '''        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+          self.webView = webView
+
+          coordinator.providerAuthenticationDidCompleteHandler = { [weak self] in
+              Task { @MainActor [weak self] in
+                  self?.handleProviderAuthenticationConfirmed()
+              }
+          }
+          coordinator.attachMainWebView(webView)
+
+          coordinator.navigationDidFinishHandler = { [weak self] _ in
+          '''
+          if old_attach not in store:
+              raise SystemExit("Expected coordinator attach block was not found")
+          store = store.replace(old_attach, new_attach, 1)
+
+          method_anchor = '''    private func handleExplicitLogoutDetected() {
+          '''
+          auth_method = '''    private func handleProviderAuthenticationConfirmed() {
+              explicitLogoutDetected = false
+              logoutNavigationGeneration = nil
+              didDetectDisplayName = false
+
+              if profile.kind != .guest {
+                  sessionMutationGeneration += 1
+                  browserStateVault.markActive(profileID: storageProfileID)
+              }
+
+              scheduleProfileStateCapture()
+          }
+
+          private func handleExplicitLogoutDetected() {
+          '''
+          if method_anchor not in store:
+              raise SystemExit("Expected logout handler anchor was not found")
+          store = store.replace(method_anchor, auth_method, 1)
+
+          coordinator_marker = "final class SecureChatGPTWebViewCoordinator"
+          if coordinator_marker not in store:
+              raise SystemExit("Coordinator class marker was not found")
+          prefix = store.split(coordinator_marker, 1)[0]
+
+          coordinator = r'''final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKHTTPCookieStoreObserver {
+              static let profileLogoutMessageName = "chatGPTProfileLogout"
+
+              var navigationDidFinishHandler: ((WKWebView) -> Void)?
+              var logoutDetectedHandler: (() -> Void)?
+              var providerAuthenticationDidCompleteHandler: (() -> Void)?
+
+              private let provider: AIProvider
+              private let allowedHostSuffixes: [String]
+              private weak var mainWebView: WKWebView?
+              private weak var observedCookieStore: WKHTTPCookieStore?
+              private var authPopupWebViews: [ObjectIdentifier: WKWebView] = [:]
+              private var grokPopupsThatLeftProvider: Set<ObjectIdentifier> = []
+              private var claudeSessionCookieSeen = false
+              private let internalSchemes = [
+                  "https",
+                  "about",
+                  "blob",
+                  "data"
+              ]
+              private let externalSchemes = [
+                  "http",
+                  "https",
+                  "mailto",
+                  "tel",
+                  "sms"
+              ]
+
+              init(provider: AIProvider = AIProviderID.chatGPT.provider) {
+                  self.provider = provider
+                  self.allowedHostSuffixes = provider.allowedHostSuffixes
+                  super.init()
+              }
+
+              deinit {
+                  observedCookieStore?.remove(self)
+              }
+
+              func attachMainWebView(_ webView: WKWebView) {
+                  mainWebView = webView
+
+                  let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+                  if observedCookieStore !== cookieStore {
+                      observedCookieStore?.remove(self)
+                      observedCookieStore = cookieStore
+                      cookieStore.add(self)
+                  }
+
+                  if provider.id == .claude {
+                      inspectClaudeSessionCookie(in: cookieStore)
+                  }
+              }
+
+              func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+                  guard message.name == Self.profileLogoutMessageName else { return }
+                  logoutDetectedHandler?()
+              }
+
+              func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+                  guard provider.id == .claude else { return }
+                  inspectClaudeSessionCookie(in: cookieStore)
+              }
+
+              func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+                  if isAuthPopup(webView) {
+                      trackAuthPopupNavigation(webView, url: webView.url)
+
+                      if provider.id == .grok,
+                         grokPopupsThatLeftProvider.contains(ObjectIdentifier(webView)),
+                         isCompletedGrokReturnURL(webView.url) {
+                          closeAuthPopup(webView)
+                          completeProviderAuthentication()
+                      }
+                      return
+                  }
+
+                  navigationDidFinishHandler?(webView)
+              }
+
+              func webView(_ webView: WKWebView,
+                           decidePolicyFor navigationAction: WKNavigationAction,
+                           decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                  guard let url = navigationAction.request.url else {
+                      decisionHandler(.cancel)
+                      return
+                  }
+
+                  if isAuthPopup(webView) {
+                      trackAuthPopupNavigation(webView, url: url)
+                      decisionHandler(allowsAuthPopupURL(url) ? .allow : .cancel)
+                      return
+                  }
+
+                  if navigationAction.targetFrame == nil,
+                     shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {
+                      decisionHandler(.allow)
+                      return
+                  }
+
+                  if navigationAction.targetFrame?.isMainFrame == false {
+                      decisionHandler(allowsEmbeddedFrameURL(url) ? .allow : .cancel)
+                      return
+                  }
+
+                  if isAllowedInsideWebView(url: url) {
+                      decisionHandler(.allow)
+                      return
+                  }
+
+                  if shouldOpenExternally(url: url, navigationAction: navigationAction) {
+                      openExternally(url)
+                  }
+
+                  decisionHandler(.cancel)
+              }
+
+              func webView(_ webView: WKWebView,
+                           createWebViewWith configuration: WKWebViewConfiguration,
+                           for navigationAction: WKNavigationAction,
+                           windowFeatures: WKWindowFeatures) -> WKWebView? {
+                  guard navigationAction.targetFrame == nil,
+                        let url = navigationAction.request.url else {
+                      return nil
+                  }
+
+                  if shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {
+                      return createAuthPopupWebView(configuration: configuration, opener: webView, initialURL: url)
+                  }
+
+                  if isAllowedInsideWebView(url: url) {
+                      webView.load(URLRequest(url: url))
+                  } else if shouldOpenExternally(url: url, navigationAction: navigationAction) {
+                      openExternally(url)
+                  }
+
+                  return nil
+              }
+
+              func webViewDidClose(_ webView: WKWebView) {
+                  guard isAuthPopup(webView) else { return }
+
+                  let popupID = ObjectIdentifier(webView)
+                  let completedGrokAuth = provider.id == .grok
+                      && grokPopupsThatLeftProvider.contains(popupID)
+
+                  closeAuthPopup(webView)
+
+                  if completedGrokAuth {
+                      completeProviderAuthentication()
+                  }
+              }
+
+              private func createAuthPopupWebView(
+                  configuration: WKWebViewConfiguration,
+                  opener: WKWebView,
+                  initialURL: URL
+              ) -> WKWebView {
+                  configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+
+                  let popupWebView = WKWebView(frame: .zero, configuration: configuration)
+                  popupWebView.navigationDelegate = self
+                  popupWebView.uiDelegate = self
+                  popupWebView.allowsBackForwardNavigationGestures = true
+                  popupWebView.scrollView.keyboardDismissMode = .interactive
+                  popupWebView.customUserAgent = opener.customUserAgent
+                  popupWebView.backgroundColor = .systemBackground
+                  popupWebView.isOpaque = true
+
+                  let hostView = mainWebView ?? opener
+                  popupWebView.frame = hostView.bounds
+                  popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                  hostView.addSubview(popupWebView)
+
+                  let popupID = ObjectIdentifier(popupWebView)
+                  authPopupWebViews[popupID] = popupWebView
+                  trackAuthPopupNavigation(popupWebView, url: initialURL)
+
+                  return popupWebView
+              }
+
+              private func closeAuthPopup(_ webView: WKWebView) {
+                  let popupID = ObjectIdentifier(webView)
+                  webView.stopLoading()
+                  webView.navigationDelegate = nil
+                  webView.uiDelegate = nil
+                  webView.removeFromSuperview()
+                  authPopupWebViews.removeValue(forKey: popupID)
+                  grokPopupsThatLeftProvider.remove(popupID)
+              }
+
+              private func completeProviderAuthentication() {
+                  providerAuthenticationDidCompleteHandler?()
+
+                  guard let mainWebView else { return }
+                  mainWebView.stopLoading()
+                  mainWebView.load(URLRequest(url: provider.startURL))
+              }
+
+              private func inspectClaudeSessionCookie(in cookieStore: WKHTTPCookieStore) {
+                  guard provider.id == .claude, !claudeSessionCookieSeen else { return }
+
+                  cookieStore.getAllCookies { [weak self] cookies in
+                      guard let self else { return }
+
+                      let hasClaudeSession = cookies.contains { cookie in
+                          let domain = cookie.domain
+                              .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                              .lowercased()
+                          return cookie.name == "sessionKey"
+                              && (domain == "claude.ai" || domain.hasSuffix(".claude.ai"))
+                              && cookie.value.hasPrefix("sk-ant-sid01")
+                      }
+
+                      guard hasClaudeSession else { return }
+
+                      DispatchQueue.main.async { [weak self] in
+                          guard let self, !self.claudeSessionCookieSeen else { return }
+                          self.claudeSessionCookieSeen = true
+
+                          let popups = Array(self.authPopupWebViews.values)
+                          for popup in popups {
+                              self.closeAuthPopup(popup)
+                          }
+
+                          self.completeProviderAuthentication()
+                      }
+                  }
+              }
+
+              private func shouldUseProviderAuthPopup(url: URL, openerURL: URL?) -> Bool {
+                  guard let host = url.host?.lowercased() else { return false }
+                  let openerPath = openerURL?.path.lowercased() ?? ""
+
+                  switch provider.id {
+                  case .claude:
+                      let authHost = host == "accounts.google.com"
+                          || host == "appleid.apple.com"
+                          || host == "login.microsoftonline.com"
+                          || host == "accounts.anthropic.com"
+                          || host.hasSuffix(".workos.com")
+                          || host.hasSuffix(".auth0.com")
+                      return authHost || openerPath.hasPrefix("/login") || openerPath.hasPrefix("/auth")
+
+                  case .grok:
+                      let authHost = host == "accounts.x.ai"
+                          || host == "x.com"
+                          || host == "accounts.google.com"
+                          || host == "appleid.apple.com"
+                      return authHost
+                          || openerPath.hasPrefix("/sign-in")
+                          || openerPath.hasPrefix("/signin")
+                          || openerPath.hasPrefix("/login")
+                          || openerPath.hasPrefix("/auth")
+
+                  default:
+                      return false
+                  }
+              }
+
+              private func trackAuthPopupNavigation(_ webView: WKWebView, url: URL?) {
+                  guard provider.id == .grok,
+                        isAuthPopup(webView),
+                        let url,
+                        !isGrokURL(url) else {
+                      return
+                  }
+
+                  grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
+              }
+
+              private func isCompletedGrokReturnURL(_ url: URL?) -> Bool {
+                  guard let url, isGrokURL(url) else { return false }
+                  let path = url.path.lowercased()
+                  return !path.hasPrefix("/sign-in")
+                      && !path.hasPrefix("/signin")
+                      && !path.hasPrefix("/login")
+                      && !path.hasPrefix("/auth")
+              }
+
+              private func isGrokURL(_ url: URL) -> Bool {
+                  guard let host = url.host?.lowercased() else { return false }
+                  return host == "grok.com" || host.hasSuffix(".grok.com")
+              }
+
+              private func isAuthPopup(_ webView: WKWebView) -> Bool {
+                  authPopupWebViews[ObjectIdentifier(webView)] != nil
+              }
+
+              private func allowsAuthPopupURL(_ url: URL) -> Bool {
+                  guard let scheme = url.scheme?.lowercased() else { return false }
+                  return scheme == "http"
+                      || scheme == "https"
+                      || scheme == "about"
+                      || scheme == "blob"
+                      || scheme == "data"
+              }
+
+              private func allowsEmbeddedFrameURL(_ url: URL) -> Bool {
+                  guard let scheme = url.scheme?.lowercased() else { return false }
+                  return scheme == "https"
+                      || scheme == "about"
+                      || scheme == "blob"
+                      || scheme == "data"
+              }
+
+              private func isAllowedInsideWebView(url: URL) -> Bool {
+                  guard let scheme = url.scheme?.lowercased(), internalSchemes.contains(scheme) else {
+                      return false
+                  }
+
+                  if scheme == "about" || scheme == "blob" || scheme == "data" {
+                      return true
+                  }
+
+                  guard scheme == "https", let host = url.host?.lowercased() else {
+                      return false
+                  }
+
+                  return allowedHostSuffixes.contains { suffix in
+                      host == suffix || host.hasSuffix("." + suffix)
+                  }
+              }
+
+              private func shouldOpenExternally(url: URL, navigationAction: WKNavigationAction) -> Bool {
+                  guard let scheme = url.scheme?.lowercased(), externalSchemes.contains(scheme) else {
+                      return false
+                  }
+
+                  if isAllowedInsideWebView(url: url) {
+                      return false
+                  }
+
+                  return navigationAction.navigationType == .linkActivated
+              }
+
+              private func openExternally(_ url: URL) {
+                  DispatchQueue.main.async {
+                      UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                  }
+              }
+
+              @available(iOS 15.0, *)
+              func webView(_ webView: WKWebView,
+                           requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                           initiatedByFrame frame: WKFrameInfo,
+                           type: WKMediaCaptureType,
+                           decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+                  decisionHandler(.prompt)
+              }
+          }
+          '''
+
+          store_path.write_text(prefix + coordinator)
+
+          provider_path = Path("ChatGPTWebView/App/AIProvider.swift")
+          provider = provider_path.read_text()
+
+          old_auth_guard = '''        let path = url.path.lowercased()
+          return !unauthenticatedPathPrefixes.contains { path.hasPrefix($0) }
+          '''
+          new_auth_guard = '''        if id == .claude, host != "claude.ai" {
+              return false
+          }
+
+          let path = url.path.lowercased()
+          return !unauthenticatedPathPrefixes.contains { path.hasPrefix($0) }
+          '''
+          if old_auth_guard not in provider:
+              raise SystemExit("Expected authenticated URL path guard was not found")
+          provider = provider.replace(old_auth_guard, new_auth_guard, 1)
+
+          old_claude_auth_hosts = '''                "microsoftonline.com",
+                  "live.com"
+              ],
+          '''
+          new_claude_auth_hosts = '''                "microsoftonline.com",
+                  "live.com",
+                  "challenges.cloudflare.com"
+              ],
+          '''
+          if old_claude_auth_hosts not in provider:
+              raise SystemExit("Expected Claude host block was not found")
+          provider = provider.replace(old_claude_auth_hosts, new_claude_auth_hosts, 1)
+
+          old_grok_auth_hosts = '''                "apple.com",
+                  "icloud.com"
+              ],
+              persistentCookieHostSuffixes: ["grok.com", "x.ai", "x.com", "twitter.com", "twimg.com"],
+          '''
+          new_grok_auth_hosts = '''                "apple.com",
+                  "icloud.com",
+                  "challenges.cloudflare.com"
+              ],
+              persistentCookieHostSuffixes: ["grok.com", "x.ai", "x.com", "twitter.com", "twimg.com"],
+          '''
+          if old_grok_auth_hosts not in provider:
+              raise SystemExit("Expected Grok host block was not found")
+          provider = provider.replace(old_grok_auth_hosts, new_grok_auth_hosts, 1)
+          provider_path.write_text(provider)
+
+          project_path = Path("project.yml")
+          project = project_path.read_text()
+          old_build = 'CURRENT_PROJECT_VERSION: "28"'
+          new_build = 'CURRENT_PROJECT_VERSION: "29"'
+          if old_build not in project:
+              raise SystemExit("Expected build 28 was not found")
+          project_path.write_text(project.replace(old_build, new_build, 1))
+
+      - name: Verify patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -F 'configuration.preferences.javaScriptCanOpenWindowsAutomatically = true' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'WKHTTPCookieStoreObserver' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'cookie.name == "sessionKey"' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'return createAuthPopupWebView(configuration: configuration, opener: webView, initialURL: url)' ChatGPTWebView/Web/ChatGPTWebViewStore.swift
+          grep -F 'if id == .claude, host != "claude.ai"' ChatGPTWebView/App/AIProvider.swift
+          grep -F 'CURRENT_PROJECT_VERSION: "29"' project.yml
+
+      - name: Remove one-time workflow and commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/patch-provider-oauth-popups.yml
+          git add ChatGPTWebView/Web/ChatGPTWebViewStore.swift ChatGPTWebView/App/AIProvider.swift project.yml
+          git commit -m "Preserve provider OAuth popup sessions"
+          git push origin HEAD:codex/multi-ai-architecture
