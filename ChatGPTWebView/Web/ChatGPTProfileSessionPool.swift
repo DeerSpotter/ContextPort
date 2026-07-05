@@ -8,6 +8,7 @@ private struct AIProfileSessionKey: Hashable {
 @MainActor
 final class ChatGPTProfileSessionPool: ObservableObject {
     private var stores: [AIProfileSessionKey: ChatGPTWebViewStore] = [:]
+    private var chatPerformanceConfiguration: ChatPerformanceConfiguration = .disabled
 
     // ChatGPT compatibility surface for existing callers.
     func store(
@@ -51,6 +52,7 @@ final class ChatGPTProfileSessionPool: ObservableObject {
     ) -> ChatGPTWebViewStore {
         let key = AIProfileSessionKey(providerID: provider.id, profileID: profile.id)
         if let existing = stores[key] {
+            existing.updateChatPerformanceConfiguration(chatPerformanceConfiguration)
             return existing
         }
 
@@ -113,8 +115,20 @@ final class ChatGPTProfileSessionPool: ObservableObject {
                 onDetectedDisplayName(profileID, displayName)
             }
         )
+        store.updateChatPerformanceConfiguration(chatPerformanceConfiguration)
         stores[key] = store
         return store
+    }
+
+    func updateChatPerformanceConfiguration(_ configuration: ChatPerformanceConfiguration) {
+        guard chatPerformanceConfiguration != configuration else {
+            return
+        }
+
+        chatPerformanceConfiguration = configuration
+        for store in stores.values {
+            store.updateChatPerformanceConfiguration(configuration)
+        }
     }
 
     func persistSession(providerID: AIProviderID, profileID: String) async {
