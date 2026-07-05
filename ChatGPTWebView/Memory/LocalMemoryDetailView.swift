@@ -4,6 +4,7 @@ struct LocalMemoryDetailView: View {
     let entry: LocalMemoryEntry
 
     @State private var launchRequest: MemoryLaunchRequest?
+    @State private var sourceArchiveShareItem: MemoryExportShareItem?
 
     var body: some View {
         ScrollView {
@@ -20,6 +21,10 @@ struct LocalMemoryDetailView: View {
                 .buttonStyle(.borderedProminent)
 
                 memoryInfo
+
+                if let archiveURL = DeveloperSourceMemoryArchiveBuilder.existingArchiveURL(for: entry) {
+                    developerSourceArchive(url: archiveURL)
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Revision History")
@@ -68,6 +73,9 @@ struct LocalMemoryDetailView: View {
         .sheet(item: $launchRequest) { request in
             MemoryLaunchSheet(entries: request.entries)
         }
+        .sheet(item: $sourceArchiveShareItem) { item in
+            MemoryExportShareSheet(url: item.url)
+        }
     }
 
     private var memoryInfo: some View {
@@ -81,5 +89,44 @@ struct LocalMemoryDetailView: View {
         .font(.caption)
         .foregroundColor(.secondary)
         .textSelection(.enabled)
+    }
+
+    private func developerSourceArchive(url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Developer Sources ZIP")
+                .font(.headline)
+
+            Button {
+                sourceArchiveShareItem = MemoryExportShareItem(url: url)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "archivebox.fill")
+                        .font(.title3)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Share Source ZIP")
+                            .font(.body.weight(.semibold))
+                        Text(archiveSizeLabel(url: url))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "square.and.arrow.up")
+                        .foregroundColor(.secondary)
+                }
+                .padding(12)
+                .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func archiveSizeLabel(url: URL) -> String {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let byteCount = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        let size = ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
+        return "ContextPort Loaded Sources.zip • \(size)"
     }
 }
