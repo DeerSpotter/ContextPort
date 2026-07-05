@@ -134,7 +134,7 @@ struct MemoryLaunchSheet: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Choose how ContextPort should share the selected Memory with this AI.")
+                Text("Selected memories are first combined into one ContextPort context bundle. PDF and Markdown are two formats of the same combined context.")
             }
         }
     }
