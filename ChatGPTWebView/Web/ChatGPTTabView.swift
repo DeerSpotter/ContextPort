@@ -12,9 +12,13 @@ struct AIChatTabView: View {
     @State private var isAttachingFiles = false
     @State private var isHardRefreshing = false
     @State private var isKeyboardVisible = false
+    @State private var isShowingSaveContextOptions = false
+    @State private var isShowingMemoryRevisionPicker = false
     @State private var pendingPasteContextText: String?
     @State private var pendingAttachFileURLs: [URL] = []
     @State private var pendingPasteContextID = UUID()
+    @State private var sourceMemoryIDs: [UUID] = []
+    @State private var sourceMemorySessionID: String?
     @State private var lastProviderID = AIProviderID.chatGPT
     @State private var lastProfileID = ChatGPTProfile.primaryID
 
@@ -33,7 +37,7 @@ struct AIChatTabView: View {
                         } else if !pendingAttachFileURLs.isEmpty {
                             attachPendingFiles(pendingAttachFileURLs)
                         } else {
-                            saveCurrentChatToMemory()
+                            presentSaveContextChoices()
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -90,6 +94,37 @@ struct AIChatTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             setTypingPriority(false)
         }
+        .confirmationDialog(
+            "Save Context",
+            isPresented: $isShowingSaveContextOptions,
+            titleVisibility: .visible
+        ) {
+            ForEach(sourceMemoryEntries) { entry in
+                Button("Add Revision to \"\(entry.title)\"") {
+                    saveCurrentChatToMemory(destination: .revision(entry))
+                }
+            }
+
+            if !appModel.localMemoryEntries.isEmpty {
+                Button("Choose Existing Memory") {
+                    isShowingMemoryRevisionPicker = true
+                }
+            }
+
+            Button("Save as New Memory") {
+                saveCurrentChatToMemory(destination: .newMemory)
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Add this full chat as a new revision of an existing Memory, or create a new Memory.")
+        }
+        .sheet(isPresented: $isShowingMemoryRevisionPicker) {
+            MemoryRevisionDestinationPicker(entries: appModel.localMemoryEntries) { entry in
+                isShowingMemoryRevisionPicker = false
+                saveCurrentChatToMemory(destination: .revision(entry))
+            }
+        }
     }
 
     private var provider: AIProvider {
@@ -117,6 +152,13 @@ struct AIChatTabView: View {
                 )
             }
         )
+    }
+
+    private var sourceMemoryEntries: [LocalMemoryEntry] {
+        guard sourceMemorySessionID == activeSessionID else { return [] }
+        return sourceMemoryIDs.compactMap { id in
+            appModel.localMemoryEntries.first(where: { $0.id == id })
+        }
     }
 
     private var contextButtonTitle: String {
@@ -194,6 +236,8 @@ struct AIChatTabView: View {
             return
         }
 
+        sourceMemoryIDs = payload.sourceMemoryIDs
+        sourceMemorySessionID = activeSessionID
         webViewStore.startNewChatWithPendingUploadURLs(payload.fileURLs)
 
         if let composerText = payload.composerText, !composerText.isEmpty {
@@ -279,23 +323,54 @@ struct AIChatTabView: View {
         }
     }
 
-    private func saveCurrentChatToMemory() {
+    private func presentSaveContextChoices() {
+        guard !isSavingContext else { return }
+        appModel.reloadLocalMemory()
+        isShowingSaveContextOptions = true
+    }
+
+    private func saveCurrentChatToMemory(destination: MemorySaveDestination) {
         guard !isSavingContext else { return }
         isSavingContext = true
-        appModel.statusMessage = "Saving \(provider.displayName) chat to Memory..."
+
+        switch destination {
+        case .newMemory:
+            appModel.statusMessage = "Saving \(provider.displayName) chat as a new Memory..."
+        case .revision(let memory):
+            appModel.statusMessage = "Adding a new revision to \"\(memory.title)\"..."
+        }
+
         Task { @MainActor in
             defer { isSavingContext = false }
             do {
                 let export = try await webViewStore.exportCurrentConversation()
-                let result = try LocalMemoryStore().saveExportedConversation(
-                    projectName: appModel.selectedProject?.name ?? "ChatGPT-WebView",
-                    title: export.title,
-                    markdownText: export.markdown,
-                    pdfData: export.pdfData,
-                    sourceURL: export.sourceURL,
-                    messageCount: export.messageCount,
-                    exportedAt: export.exportedAt
-                )
+                let store = LocalMemoryStore()
+                let result: LocalMemorySaveResult
+
+                switch destination {
+                case .newMemory:
+                    result = try store.saveExportedConversation(
+                        projectName: appModel.selectedProject?.name ?? "ContextPort",
+                        title: export.title,
+                        markdownText: export.markdown,
+                        pdfData: export.pdfData,
+                        sourceURL: export.sourceURL,
+                        messageCount: export.messageCount,
+                        exportedAt: export.exportedAt
+                    )
+                case .revision(let memory):
+                    result = try store.addRevision(
+                        to: memory,
+                        markdownText: export.markdown,
+                        pdfData: export.pdfData,
+                        sourceURL: export.sourceURL,
+                        messageCount: export.messageCount,
+                        exportedAt: export.exportedAt
+                    )
+                }
+
+                sourceMemoryIDs = [result.entry.id]
+                sourceMemorySessionID = activeSessionID
                 appModel.reloadLocalMemory()
                 appModel.statusMessage = result.message
             } catch {
@@ -306,6 +381,59 @@ struct AIChatTabView: View {
 }
 
 typealias ChatGPTTabView = AIChatTabView
+
+private enum MemorySaveDestination {
+    case newMemory
+    case revision(LocalMemoryEntry)
+}
+
+private struct MemoryRevisionDestinationPicker: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let entries: [LocalMemoryEntry]
+    let onSelect: (LocalMemoryEntry) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List(entries) { entry in
+                Button {
+                    onSelect(entry)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: entry.isFavorite ? "star.fill" : "externaldrive.connected.to.line.below")
+                            .foregroundColor(entry.isFavorite ? .yellow : .secondary)
+                            .frame(width: 22)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(entry.title)
+                                .foregroundColor(.primary)
+                                .lineLimit(2)
+                            Text("\(entry.revisionCount) \(entry.revisionCount == 1 ? \"revision\" : \"revisions\")")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle("Choose Memory")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
 
 private struct CircleIconButton: View {
     let systemImage: String
