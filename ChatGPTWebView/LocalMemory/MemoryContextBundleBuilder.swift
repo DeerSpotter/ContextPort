@@ -21,12 +21,13 @@ struct MemoryContextBundle {
     let format: MemorySharingFormat
 
     func statusMessage(for providerName: String) -> String {
+        let entryVerb = selectedCount == 1 ? "entry is" : "entries are"
         if format.injectsMarkdownText {
-            return "\(selectedCount) Memory \(selectedCount == 1 ? \"entry is\" : \"entries are\") ready for \(providerName). Tap Paste Context to insert the combined context."
+            return "\(selectedCount) Memory \(entryVerb) ready for \(providerName). Tap Paste Context to insert the combined context."
         }
 
         let names = fileURLs.map(\.lastPathComponent).joined(separator: ", ")
-        return "\(selectedCount) Memory \(selectedCount == 1 ? \"entry is\" : \"entries are\") ready for \(providerName): \(names)."
+        return "\(selectedCount) Memory \(entryVerb) ready for \(providerName): \(names)."
     }
 }
 
