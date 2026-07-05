@@ -1,4 +1,4 @@
-name: Build Unsigned IPA
+name: Build ContextPort Unsigned IPA
 
 on:
   push:
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   build-unsigned-ipa:
-    name: Build unsigned IPA for iOS 16
+    name: Build ContextPort unsigned IPA for iOS 16
     runs-on: macos-latest
 
     steps:
@@ -117,7 +117,7 @@ jobs:
         if: steps.detect.outputs.can_build == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: ipa-build-audit
+          name: ContextPort-ipa-build-audit
           path: ipa-build-audit.md
           if-no-files-found: error
           retention-days: 14
@@ -148,7 +148,7 @@ jobs:
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER=""
 
-      - name: Package unsigned IPA
+      - name: Package ContextPort unsigned IPA
         if: steps.detect.outputs.can_build == 'true'
         shell: bash
         run: |
@@ -163,14 +163,14 @@ jobs:
           rm -rf build/Payload
           mkdir -p build/Payload
           cp -R "$APP_PATH" build/Payload/
-          (cd build && zip -qry ChatGPT-WebView-ios16-unsigned.ipa Payload)
-          ls -lh build/ChatGPT-WebView-ios16-unsigned.ipa
+          (cd build && zip -qry ContextPort-ios16-unsigned.ipa Payload)
+          ls -lh build/ContextPort-ios16-unsigned.ipa
 
-      - name: Upload IPA artifact
+      - name: Upload ContextPort IPA artifact
         if: steps.detect.outputs.can_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ChatGPT-WebView-ios16-unsigned-ipa
-          path: build/ChatGPT-WebView-ios16-unsigned.ipa
+          name: ContextPort-ios16-unsigned-ipa
+          path: build/ContextPort-ios16-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
