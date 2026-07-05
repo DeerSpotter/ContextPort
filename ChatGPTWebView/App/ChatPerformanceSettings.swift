@@ -19,6 +19,7 @@ struct ChatPerformanceConfiguration: Equatable {
 
 @MainActor
 final class ChatPerformanceSettings: ObservableObject {
+    static let shared = ChatPerformanceSettings()
     static let visibleMessageRange = 5...100
     static let visibleMessageStep = 5
 
