@@ -169,6 +169,14 @@ The source controlled build workflow generates the Xcode project from `project.y
 
 For published versions, the IPA attached to the GitHub Release should come from the successful Actions workflow output for that release source revision.
 
+## Support development
+
+ContextPort is actively developed and maintained as an open source project. Developers and users who want to contribute toward continued development can support the project here:
+
+[https://buymeacoffee.com/spotterdeer](https://buymeacoffee.com/spotterdeer)
+
+Support helps fund the time spent testing provider login flows, maintaining iOS compatibility, and continuing ContextPort development.
+
 ## Build requirements
 
 - Xcode 14+
