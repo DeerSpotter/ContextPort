@@ -408,7 +408,7 @@ private struct MemoryRevisionDestinationPicker: View {
                             Text(entry.title)
                                 .foregroundColor(.primary)
                                 .lineLimit(2)
-                            Text("\(entry.revisionCount) \(entry.revisionCount == 1 ? \"revision\" : \"revisions\")")
+                            Text(revisionLabel(for: entry))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -432,6 +432,11 @@ private struct MemoryRevisionDestinationPicker: View {
                 }
             }
         }
+    }
+
+    private func revisionLabel(for entry: LocalMemoryEntry) -> String {
+        let noun = entry.revisionCount == 1 ? "revision" : "revisions"
+        return "\(entry.revisionCount) \(noun)"
     }
 }
 
