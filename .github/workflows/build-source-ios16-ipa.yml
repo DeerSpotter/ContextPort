@@ -24,7 +24,7 @@ on:
         default: "16.0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-source-ios16-ipa:
@@ -34,15 +34,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Capture PR head Git tree SHA
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p build
-          HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
-          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
-          git rev-parse "$HEAD_SHA^{tree}" | tee build/base-tree-sha.txt
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
       - name: Apply Grok OAuth coordinator fix
         shell: bash
@@ -68,6 +61,13 @@ jobs:
           if duplicate_load in source_path.read_text():
               raise SystemExit("Duplicate Grok popup load still exists")
           PY
+
+      - name: Commit Grok OAuth source fix
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Fix Grok OAuth popup navigation
+          branch: codex/multi-ai-architecture
+          file_pattern: ChatGPTWebView/Web/ChatGPTWebViewStore.swift
 
       - name: Show Xcode version
         run: |
@@ -145,6 +145,5 @@ jobs:
             project.yml
             ChatGPTWebView
             AppMemory
-            build/base-tree-sha.txt
           if-no-files-found: error
           retention-days: 14
