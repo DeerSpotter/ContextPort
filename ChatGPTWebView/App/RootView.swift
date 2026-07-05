@@ -83,12 +83,12 @@ struct RootView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(updateChecker: updateChecker)
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
         }
         .alert(item: $updateChecker.availableUpdate) { update in
             Alert(
                 title: Text("Update Available"),
-                message: Text("ChatGPT Memory \(update.version) is available. This IPA was built as version \(update.currentVersion)."),
+                message: Text("ContextPort \(update.version) is available. This IPA was built as version \(update.currentVersion)."),
                 primaryButton: .default(Text("View Release")) {
                     openURL(update.releaseURL)
                 },
@@ -323,11 +323,33 @@ private struct CompactTabButton: View {
 
 private struct SettingsView: View {
     @ObservedObject var updateChecker: AppUpdateChecker
+    @EnvironmentObject private var providerManager: AIProviderManager
+    @EnvironmentObject private var launchSettings: MemoryLaunchSettings
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
+                Section {
+                    ForEach(providerManager.allProviders) { provider in
+                        Toggle(isOn: providerBinding(provider.id)) {
+                            Label(provider.displayName, systemImage: provider.systemImage)
+                        }
+                    }
+                } header: {
+                    Text("AI Providers")
+                } footer: {
+                    Text("Choose which AIs are available throughout ContextPort. At least one AI must remain enabled.")
+                }
+
+                Section("Memory Sharing") {
+                    Picker("Context Format", selection: $launchSettings.sharingFormat) {
+                        ForEach(MemorySharingFormat.allCases) { format in
+                            Text(format.displayName).tag(format)
+                        }
+                    }
+                }
+
                 Section("Updates") {
                     Toggle("Check for updates on start", isOn: $updateChecker.checkForUpdatesOnStart)
                 }
@@ -342,6 +364,17 @@ private struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func providerBinding(_ providerID: AIProviderID) -> Binding<Bool> {
+        Binding(
+            get: {
+                providerManager.isProviderEnabled(providerID)
+            },
+            set: { isEnabled in
+                providerManager.setProviderEnabled(providerID, enabled: isEnabled)
+            }
+        )
     }
 }
 
