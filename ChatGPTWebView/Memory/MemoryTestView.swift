@@ -5,8 +5,10 @@ struct MemoryTestView: View {
 
     @State private var selectedSection = MemorySection.all
     @State private var isSelecting = false
+    @State private var isExportingAll = false
     @State private var selectedEntryIDs = Set<UUID>()
     @State private var launchRequest: MemoryLaunchRequest?
+    @State private var exportShareItem: MemoryExportShareItem?
 
     private let store = LocalMemoryStore()
 
@@ -39,6 +41,18 @@ struct MemoryTestView: View {
             .navigationTitle("Memory")
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Button {
+                        exportAllMemories()
+                    } label: {
+                        if isExportingAll {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                    }
+                    .disabled(appModel.localMemoryEntries.isEmpty || isExportingAll)
+                    .accessibilityLabel("Export all Memories as ZIP")
+
                     Button {
                         appModel.reloadLocalMemory()
                     } label: {
@@ -76,6 +90,9 @@ struct MemoryTestView: View {
                 isSelecting = false
                 selectedEntryIDs.removeAll()
             }
+        }
+        .sheet(item: $exportShareItem) { item in
+            MemoryExportShareSheet(url: item.url)
         }
         .onAppear {
             appModel.reloadLocalMemory()
@@ -160,6 +177,28 @@ struct MemoryTestView: View {
     private func revisionLabel(for entry: LocalMemoryEntry) -> String {
         let noun = entry.revisionCount == 1 ? "revision" : "revisions"
         return "\(entry.revisionCount) \(noun)"
+    }
+
+    private func exportAllMemories() {
+        guard !isExportingAll else { return }
+        let entries = appModel.localMemoryEntries
+        guard !entries.isEmpty else { return }
+
+        isExportingAll = true
+        appModel.statusMessage = "Preparing ZIP export for all Memories..."
+
+        Task { @MainActor in
+            defer { isExportingAll = false }
+            do {
+                let url = try await Task.detached(priority: .userInitiated) {
+                    try MemoryExportArchiveBuilder().exportAll(entries: entries)
+                }.value
+                exportShareItem = MemoryExportShareItem(url: url)
+                appModel.statusMessage = "Memory ZIP export is ready to share or save to Files."
+            } catch {
+                appModel.statusMessage = "Memory export failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func toggleSelection(_ entry: LocalMemoryEntry) {
