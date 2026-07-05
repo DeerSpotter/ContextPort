@@ -6,7 +6,6 @@ struct AIChatTabView: View {
     @EnvironmentObject private var providerManager: AIProviderManager
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
     @EnvironmentObject private var sessionPool: ChatGPTProfileSessionPool
-    @ObservedObject private var chatPerformanceSettings = ChatPerformanceSettings.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var isSavingContext = false
     @State private var isPastingContext = false
@@ -67,7 +66,6 @@ struct AIChatTabView: View {
             lastProfileID = activeProfile.id
             handleActiveSessionAppearance()
             handlePendingMemoryStart()
-            applyChatPerformanceConfiguration(retryAfterLoad: true)
         }
         .onChange(of: activeSessionID) { _ in
             let previousProviderID = lastProviderID
@@ -78,16 +76,6 @@ struct AIChatTabView: View {
                 fromProviderID: previousProviderID,
                 previousProfileID: previousProfileID
             )
-            applyChatPerformanceConfiguration(retryAfterLoad: true)
-        }
-        .onChange(of: chatPerformanceSettings.isEnabled) { _ in
-            applyChatPerformanceConfiguration()
-        }
-        .onChange(of: chatPerformanceSettings.visibleMessageLimit) { _ in
-            applyChatPerformanceConfiguration()
-        }
-        .onChange(of: chatPerformanceSettings.enabledProviderIDs) { _ in
-            applyChatPerformanceConfiguration()
         }
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
             handlePendingMemoryStart()
@@ -146,19 +134,6 @@ struct AIChatTabView: View {
             providerID: provider.id,
             profileID: activeProfile.id
         )
-    }
-
-    private func applyChatPerformanceConfiguration(retryAfterLoad: Bool = false) {
-        Task { @MainActor in
-            await webViewStore.applyChatPerformanceConfiguration(chatPerformanceSettings.configuration)
-
-            guard retryAfterLoad else { return }
-
-            for delay in [500_000_000, 1_250_000_000, 2_500_000_000] as [UInt64] {
-                try? await Task.sleep(nanoseconds: delay)
-                await webViewStore.applyChatPerformanceConfiguration(chatPerformanceSettings.configuration)
-            }
-        }
     }
 
     private func handleActiveSessionAppearance() {
@@ -220,7 +195,6 @@ struct AIChatTabView: View {
         }
 
         webViewStore.startNewChatWithPendingUploadURLs(payload.fileURLs)
-        applyChatPerformanceConfiguration(retryAfterLoad: true)
 
         if let composerText = payload.composerText, !composerText.isEmpty {
             pendingPasteContextText = composerText
@@ -279,7 +253,6 @@ struct AIChatTabView: View {
 
         Task { @MainActor in
             await webViewStore.hardRefreshCurrentSession()
-            await webViewStore.applyChatPerformanceConfiguration(chatPerformanceSettings.configuration)
             isHardRefreshing = false
             appModel.statusMessage = "Hard refresh completed for \(provider.displayName)."
         }
