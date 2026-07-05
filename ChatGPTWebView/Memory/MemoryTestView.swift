@@ -300,6 +300,7 @@ struct MemoryTestView: View {
         for offset in offsets {
             guard entries.indices.contains(offset) else { continue }
             selectedEntryIDs.remove(entries[offset].id)
+            DeveloperSourceMemoryArchiveBuilder.deleteArchive(for: entries[offset])
             try? store.deleteEntry(entries[offset])
         }
         appModel.reloadLocalMemory()
