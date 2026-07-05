@@ -24,7 +24,7 @@ on:
         default: "16.0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-source-ios16-ipa:
@@ -34,6 +34,474 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+
+      - name: Apply Grok auth-chain navigation model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              source = path.read_text()
+              if new in source:
+                  return
+              if old not in source:
+                  raise SystemExit(f"Expected patch anchor not found in {path}: {old[:120]!r}")
+              path.write_text(source.replace(old, new, 1))
+
+          provider_path = Path("ChatGPTWebView/App/AIProvider.swift")
+          replace_once(
+              provider_path,
+              '''            allowedHostSuffixes: [
+                "grok.com",
+                "x.ai",
+                "x.com",
+                "twitter.com",
+                "twimg.com",
+                "google.com",
+                "gstatic.com",
+                "googleusercontent.com",
+                "apple.com",
+                "icloud.com",
+                "challenges.cloudflare.com"
+            ],
+            persistentCookieHostSuffixes: ["grok.com", "x.ai", "x.com", "twitter.com", "twimg.com"],''',
+              '''            allowedHostSuffixes: [
+                "grok.com",
+                "x.ai",
+                "x.com",
+                "twitter.com",
+                "twimg.com",
+                "grokipedia.com",
+                "grokusercontent.com",
+                "google.com",
+                "gstatic.com",
+                "googleusercontent.com",
+                "googleapis.com",
+                "accounts.youtube.com",
+                "apple.com",
+                "icloud.com",
+                "challenges.cloudflare.com"
+            ],
+            persistentCookieHostSuffixes: [
+                "grok.com",
+                "x.ai",
+                "x.com",
+                "twitter.com",
+                "twimg.com",
+                "grokipedia.com",
+                "grokusercontent.com"
+            ],'''
+          )
+
+          store_path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
+          replace_once(
+              store_path,
+              '''    private var authPopupWebViews: [ObjectIdentifier: WKWebView] = [:]
+    private var grokPopupsThatLeftProvider: Set<ObjectIdentifier> = []
+    private var grokGoogleCheckCookieRecoveryAttempted: Set<ObjectIdentifier> = []
+    private var claudeSessionCookieSeen = false''',
+              '''    private var authPopupWebViews: [ObjectIdentifier: WKWebView] = [:]
+    private var grokAuthInProgress = false
+    private var grokAuthLeftProvider = false
+    private var grokAuthBridgeReloadRequested = false
+    private var grokIntendedURL: URL?
+    private var claudeSessionCookieSeen = false'''
+          )
+
+          replace_once(
+              store_path,
+              '''    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if provider.id == .grok {
+            let webViewID = ObjectIdentifier(webView)
+
+            if isGoogleCheckCookieURL(webView.url) {
+                resumeGrokGoogleCheckCookieIfNeeded(in: webView)
+            } else {
+                grokGoogleCheckCookieRecoveryAttempted.remove(webViewID)
+            }
+        }
+
+        if isAuthPopup(webView) {
+            trackAuthPopupNavigation(webView, url: webView.url)
+
+            if provider.id == .grok,
+               grokPopupsThatLeftProvider.contains(ObjectIdentifier(webView)),
+               isCompletedGrokReturnURL(webView.url) {
+                closeAuthPopup(webView)
+                completeProviderAuthentication()
+            }
+            return
+        }
+
+        navigationDidFinishHandler?(webView)
+    }''',
+              '''    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if provider.id == .grok {
+            updateGrokAuthState(for: webView.url)
+
+            if grokAuthInProgress, isGrokAuthBridgeCompletionURL(webView.url) {
+                reloadGrokAfterAuthBridgeIfNeeded()
+                return
+            }
+
+            if grokAuthInProgress,
+               grokAuthLeftProvider,
+               isCompletedGrokReturnURL(webView.url) {
+                grokAuthInProgress = false
+                grokAuthLeftProvider = false
+                grokAuthBridgeReloadRequested = false
+                providerAuthenticationDidCompleteHandler?()
+            }
+        }
+
+        if isAuthPopup(webView) {
+            return
+        }
+
+        navigationDidFinishHandler?(webView)
+    }'''
+          )
+
+          replace_once(
+              store_path,
+              '''        if isAuthPopup(webView) {
+            trackAuthPopupNavigation(webView, url: url)
+            decisionHandler(allowsAuthPopupURL(url) ? .allow : .cancel)
+            return
+        }
+
+        if navigationAction.targetFrame == nil,
+           shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {''',
+              '''        if provider.id == .grok {
+            updateGrokAuthState(for: url)
+
+            if navigationAction.targetFrame == nil,
+               isAllowedInsideWebView(url: url) {
+                webView.load(navigationAction.request)
+                decisionHandler(.cancel)
+                return
+            }
+        }
+
+        if isAuthPopup(webView) {
+            decisionHandler(allowsAuthPopupURL(url) ? .allow : .cancel)
+            return
+        }
+
+        if navigationAction.targetFrame == nil,
+           shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {'''
+          )
+
+          replace_once(
+              store_path,
+              '''        // Keep nested OAuth target=_blank navigation in the existing auth popup.
+        // Creating another full-screen popup here can leave a blank white layer.
+        if isAuthPopup(webView) {
+            webView.load(URLRequest(url: url))
+            return nil
+        }
+
+        if shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {''',
+              '''        // Grok auth wrappers keep OAuth/new-window navigation in the same provider WebView.
+        // This preserves one browsing context through Google/xAI cookie bridge redirects.
+        if provider.id == .grok, isAllowedInsideWebView(url: url) {
+            updateGrokAuthState(for: url)
+            webView.load(URLRequest(url: url))
+            return nil
+        }
+
+        // Claude keeps its dedicated auth popup flow.
+        if isAuthPopup(webView) {
+            webView.load(URLRequest(url: url))
+            return nil
+        }
+
+        if shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {'''
+          )
+
+          replace_once(
+              store_path,
+              '''    func webViewDidClose(_ webView: WKWebView) {
+        guard isAuthPopup(webView) else { return }
+
+        let popupID = ObjectIdentifier(webView)
+        let completedGrokAuth = provider.id == .grok
+            && grokPopupsThatLeftProvider.contains(popupID)
+
+        closeAuthPopup(webView)
+
+        if completedGrokAuth {
+            completeProviderAuthentication()
+        }
+    }''',
+              '''    func webViewDidClose(_ webView: WKWebView) {
+        guard isAuthPopup(webView) else { return }
+        closeAuthPopup(webView)
+    }'''
+          )
+
+          replace_once(
+              store_path,
+              '''        authPopupWebViews.removeValue(forKey: popupID)
+        grokPopupsThatLeftProvider.remove(popupID)
+        grokGoogleCheckCookieRecoveryAttempted.remove(popupID)
+    }
+
+    private func isGoogleCheckCookieURL(_ url: URL?) -> Bool {
+        guard let url,
+              url.host?.lowercased() == "accounts.google.com" else {
+            return false
+        }
+
+        return url.path.caseInsensitiveCompare("/CheckCookie") == .orderedSame
+    }
+
+    private func resumeGrokGoogleCheckCookieIfNeeded(in webView: WKWebView) {
+        let popupID = ObjectIdentifier(webView)
+        guard !grokGoogleCheckCookieRecoveryAttempted.contains(popupID) else {
+            return
+        }
+
+        let checkCookieURL = webView.url
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak webView] in
+            guard let self,
+                  let webView,
+                  (webView === self.mainWebView || self.isAuthPopup(webView)),
+                  self.isGoogleCheckCookieURL(webView.url),
+                  webView.url == checkCookieURL,
+                  !webView.isLoading,
+                  !self.grokGoogleCheckCookieRecoveryAttempted.contains(popupID) else {
+                return
+            }
+
+            self.grokGoogleCheckCookieRecoveryAttempted.insert(popupID)
+
+            let submitScript = #"""
+            (() => {
+              const form = document.forms && document.forms[0];
+              if (!form) return false;
+              HTMLFormElement.prototype.submit.call(form);
+              return true;
+            })();
+            """#
+
+            webView.evaluateJavaScript(submitScript, completionHandler: nil)
+        }
+    }
+
+    private func completeProviderAuthentication() {''',
+              '''        authPopupWebViews.removeValue(forKey: popupID)
+    }
+
+    private func updateGrokAuthState(for url: URL?) {
+        guard provider.id == .grok, let url else { return }
+
+        if isGrokAuthFlowURL(url) {
+            if !grokAuthInProgress {
+                grokAuthBridgeReloadRequested = false
+                grokAuthLeftProvider = false
+
+                if let currentURL = mainWebView?.url,
+                   isCompletedGrokReturnURL(currentURL) {
+                    grokIntendedURL = currentURL
+                } else {
+                    grokIntendedURL = provider.startURL
+                }
+            }
+
+            grokAuthInProgress = true
+            if !isGrokURL(url) {
+                grokAuthLeftProvider = true
+            }
+            return
+        }
+
+        if !grokAuthInProgress, isCompletedGrokReturnURL(url) {
+            grokIntendedURL = url
+        }
+    }
+
+    private func isGrokAuthFlowURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+
+        let path = url.path.lowercased()
+        if isGrokURL(url) {
+            return path.hasPrefix("/sign-in")
+                || path.hasPrefix("/signin")
+                || path.hasPrefix("/login")
+                || path.hasPrefix("/auth")
+                || path.hasPrefix("/api/auth")
+                || path.hasPrefix("/oauth")
+                || path.hasPrefix("/session")
+                || path.hasPrefix("/callback")
+        }
+
+        if hostMatches(host, suffixes: ["x.com", "twitter.com"]) {
+            return path.hasPrefix("/i/flow")
+                || path.hasPrefix("/i/oauth2")
+                || path.hasPrefix("/oauth")
+                || path.hasPrefix("/login")
+                || path.hasPrefix("/signup")
+                || path.hasPrefix("/account/")
+        }
+
+        return hostMatches(
+            host,
+            suffixes: [
+                "x.ai",
+                "auth.grokipedia.com",
+                "auth.grokusercontent.com",
+                "accounts.google.com",
+                "accounts.youtube.com",
+                "id.google.com",
+                "appleid.apple.com",
+                "login.apple.com",
+                "signin.apple.com",
+                "challenges.cloudflare.com"
+            ]
+        )
+    }
+
+    private func isGrokAuthBridgeCompletionURL(_ url: URL?) -> Bool {
+        guard grokAuthInProgress,
+              let url,
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              hostMatches(
+                host,
+                suffixes: [
+                    "accounts.x.ai",
+                    "auth.grokipedia.com",
+                    "auth.grokusercontent.com"
+                ]
+              ) else {
+            return false
+        }
+
+        let path = url.path.lowercased()
+        return path.hasPrefix("/set-cookie")
+            || path.hasPrefix("/set-session")
+            || path.hasPrefix("/success")
+            || path.hasPrefix("/complete")
+            || path.hasPrefix("/continue")
+            || path.hasPrefix("/verify")
+            || path.hasPrefix("/exchange-token")
+            || path.hasPrefix("/callback")
+            || path.hasPrefix("/auth/callback")
+            || path.hasPrefix("/oauth/callback")
+            || path.hasPrefix("/check-login")
+    }
+
+    private func reloadGrokAfterAuthBridgeIfNeeded() {
+        guard provider.id == .grok,
+              grokAuthInProgress,
+              !grokAuthBridgeReloadRequested,
+              let mainWebView else {
+            return
+        }
+
+        grokAuthBridgeReloadRequested = true
+        let targetURL = grokIntendedURL ?? provider.startURL
+        mainWebView.stopLoading()
+        mainWebView.load(URLRequest(url: targetURL))
+    }
+
+    private func hostMatches(_ host: String, suffixes: [String]) -> Bool {
+        suffixes.contains { suffix in
+            host == suffix || host.hasSuffix("." + suffix)
+        }
+    }
+
+    private func completeProviderAuthentication() {'''
+          )
+
+          replace_once(
+              store_path,
+              '''        case .grok:
+            let authHost = host == "accounts.x.ai"
+                || host == "x.ai"
+                || host.hasSuffix(".x.ai")
+                || host == "x.com"
+                || host.hasSuffix(".x.com")
+                || host == "accounts.google.com"
+                || host == "appleid.apple.com"
+                || host == "challenges.cloudflare.com"
+            return authHost
+                || openerPath.hasPrefix("/sign-in")
+                || openerPath.hasPrefix("/signin")
+                || openerPath.hasPrefix("/login")
+                || openerPath.hasPrefix("/auth")
+
+        default:''',
+              '''        case .grok:
+            return false
+
+        default:'''
+          )
+
+          replace_once(
+              store_path,
+              '''    private func trackAuthPopupNavigation(_ webView: WKWebView, url: URL?) {
+        guard provider.id == .grok,
+              isAuthPopup(webView),
+              let url,
+              url.scheme?.lowercased() == "https",
+              !isGrokURL(url) else {
+            return
+        }
+
+        grokPopupsThatLeftProvider.insert(ObjectIdentifier(webView))
+    }
+
+    private func isCompletedGrokReturnURL(_ url: URL?) -> Bool {''',
+              '''    private func isCompletedGrokReturnURL(_ url: URL?) -> Bool {'''
+          )
+
+          project_path = Path("project.yml")
+          replace_once(
+              project_path,
+              'CURRENT_PROJECT_VERSION: "37"',
+              'CURRENT_PROJECT_VERSION: "38"'
+          )
+
+          source = store_path.read_text()
+          forbidden = [
+              "grokGoogleCheckCookieRecoveryAttempted",
+              "resumeGrokGoogleCheckCookieIfNeeded",
+              "isGoogleCheckCookieURL",
+              "grokPopupsThatLeftProvider",
+              "trackAuthPopupNavigation"
+          ]
+          for token in forbidden:
+              if token in source:
+                  raise SystemExit(f"Legacy Grok auth token still present: {token}")
+
+          required = [
+              "grokAuthInProgress",
+              "isGrokAuthBridgeCompletionURL",
+              "reloadGrokAfterAuthBridgeIfNeeded",
+              '"auth.grokusercontent.com"',
+              '"auth.grokipedia.com"'
+          ]
+          for token in required:
+              if token not in source and token not in provider_path.read_text():
+                  raise SystemExit(f"Expected Grok auth-chain token missing: {token}")
+          PY
+
+      - name: Commit Grok auth-chain implementation
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Replace Grok popup auth with auth-chain navigation
+          branch: codex/multi-ai-architecture
+          file_pattern: ChatGPTWebView/App/AIProvider.swift ChatGPTWebView/Web/ChatGPTWebViewStore.swift project.yml
 
       - name: Show Xcode version
         run: |
