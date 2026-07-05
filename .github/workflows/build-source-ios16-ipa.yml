@@ -35,6 +35,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Capture base Git tree SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          git rev-parse 'HEAD^{tree}' | tee build/base-tree-sha.txt
+
       - name: Apply Grok OAuth coordinator fix
         shell: bash
         run: |
@@ -136,5 +143,6 @@ jobs:
             project.yml
             ChatGPTWebView
             AppMemory
+            build/base-tree-sha.txt
           if-no-files-found: error
           retention-days: 14
