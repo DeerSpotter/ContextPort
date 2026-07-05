@@ -27,10 +27,13 @@ struct RootView: View {
                     .accessibilityHidden(selectedTab != .memory)
                     .zIndex(selectedTab == .memory ? 1 : 0)
 
-                if developerModeEnabled && selectedTab == .developer {
-                    DeveloperSourcesView()
-                        .zIndex(2)
-                }
+                DeveloperSourcesView(
+                    isActive: developerModeEnabled && selectedTab == .developer
+                )
+                .opacity(developerModeEnabled && selectedTab == .developer ? 1 : 0)
+                .allowsHitTesting(developerModeEnabled && selectedTab == .developer)
+                .accessibilityHidden(!developerModeEnabled || selectedTab != .developer)
+                .zIndex(developerModeEnabled && selectedTab == .developer ? 2 : 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, 34)
@@ -446,7 +449,7 @@ private struct SettingsView: View {
                 } header: {
                     Text("Developer")
                 } footer: {
-                    Text("Adds a Dev tab with an on-demand Sources inspector. No source indexing runs while Developer Mode is off. Leaving the Dev tab releases the indexed source text.")
+                    Text("Adds a Dev tab with an on-demand Sources inspector. No source indexing runs while Developer Mode is off. Once indexed, loaded source text stays available across tabs and is cleared only when ContextPort closes.")
                 }
 
                 Section("Updates") {
