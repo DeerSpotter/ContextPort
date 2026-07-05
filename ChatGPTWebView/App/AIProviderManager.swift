@@ -22,14 +22,15 @@ final class AIProviderManager: ObservableObject {
         let defaults = UserDefaults.standard
         let storedEnabled = defaults.stringArray(forKey: Self.enabledProvidersKey) ?? []
         let decodedEnabled = Set(storedEnabled.compactMap(AIProviderID.init(rawValue:)))
-        self.enabledProviderIDs = decodedEnabled.isEmpty ? Set(AIProviderID.allCases) : decodedEnabled
+        let enabledIDs = decodedEnabled.isEmpty ? Set(AIProviderID.allCases) : decodedEnabled
+        self.enabledProviderIDs = enabledIDs
 
         if let rawValue = defaults.string(forKey: Self.activeProviderKey),
            let providerID = AIProviderID(rawValue: rawValue),
-           self.enabledProviderIDs.contains(providerID) {
+           enabledIDs.contains(providerID) {
             self.activeProviderID = providerID
         } else {
-            self.activeProviderID = AIProvider.all.first(where: { self.enabledProviderIDs.contains($0.id) })?.id ?? .chatGPT
+            self.activeProviderID = AIProvider.all.first(where: { enabledIDs.contains($0.id) })?.id ?? .chatGPT
         }
     }
 
