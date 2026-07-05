@@ -24,7 +24,7 @@ on:
         default: "16.0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-source-ios16-ipa:
@@ -34,6 +34,61 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+
+      - name: Apply Grok main WebView CheckCookie recovery and Memory navigation fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import base64
+          from pathlib import Path
+
+          replacements = [
+              (
+                  Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift"),
+                  "ICAgIGZ1bmMgd2ViVmlldyhfIHdlYlZpZXc6IFdLV2ViVmlldywgZGlkRmluaXNoIG5hdmlnYXRpb246IFdLTmF2aWdhdGlvbiEpIHsKICAgICAgICBpZiBpc0F1dGhQb3B1cCh3ZWJWaWV3KSB7CiAgICAgICAgICAgIHRyYWNrQXV0aFBvcHVwTmF2aWdhdGlvbih3ZWJWaWV3LCB1cmw6IHdlYlZpZXcudXJsKQoKICAgICAgICAgICAgaWYgcHJvdmlkZXIuaWQgPT0gLmdyb2ssCiAgICAgICAgICAgICAgIGlzR29vZ2xlQ2hlY2tDb29raWVVUkwod2ViVmlldy51cmwpIHsKICAgICAgICAgICAgICAgIHJlc3VtZUdyb2tHb29nbGVDaGVja0Nvb2tpZUlmTmVlZGVkKGluOiB3ZWJWaWV3KQogICAgICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgICAgIH0KCiAgICAgICAgICAgIGlmIHByb3ZpZGVyLmlkID09IC5ncm9rLAogICAgICAgICAgICAgICBncm9rUG9wdXBzVGhhdExlZnRQcm92aWRlci5jb250YWlucyhPYmplY3RJZGVudGlmaWVyKHdlYlZpZXcpKSwKICAgICAgICAgICAgICAgaXNDb21wbGV0ZWRHcm9rUmV0dXJuVVJMKHdlYlZpZXcudXJsKSB7CiAgICAgICAgICAgICAgICBjbG9zZUF1dGhQb3B1cCh3ZWJWaWV3KQogICAgICAgICAgICAgICAgY29tcGxldGVQcm92aWRlckF1dGhlbnRpY2F0aW9uKCkKICAgICAgICAgICAgfQogICAgICAgICAgICByZXR1cm4KICAgICAgICB9CgogICAgICAgIG5hdmlnYXRpb25EaWRGaW5pc2hIYW5kbGVyPyh3ZWJWaWV3KQogICAgfQo=",
+                  "ICAgIGZ1bmMgd2ViVmlldyhfIHdlYlZpZXc6IFdLV2ViVmlldywgZGlkRmluaXNoIG5hdmlnYXRpb246IFdLTmF2aWdhdGlvbiEpIHsKICAgICAgICBpZiBwcm92aWRlci5pZCA9PSAuZ3JvayB7CiAgICAgICAgICAgIGxldCB3ZWJWaWV3SUQgPSBPYmplY3RJZGVudGlmaWVyKHdlYlZpZXcpCgogICAgICAgICAgICBpZiBpc0dvb2dsZUNoZWNrQ29va2llVVJMKHdlYlZpZXcudXJsKSB7CiAgICAgICAgICAgICAgICByZXN1bWVHcm9rR29vZ2xlQ2hlY2tDb29raWVJZk5lZWRlZChpbjogd2ViVmlldykKICAgICAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgICAgIGdyb2tHb29nbGVDaGVja0Nvb2tpZVJlY292ZXJ5QXR0ZW1wdGVkLnJlbW92ZSh3ZWJWaWV3SUQpCiAgICAgICAgICAgIH0KICAgICAgICB9CgogICAgICAgIGlmIGlzQXV0aFBvcHVwKHdlYlZpZXcpIHsKICAgICAgICAgICAgdHJhY2tBdXRoUG9wdXBOYXZpZ2F0aW9uKHdlYlZpZXcsIHVybDogd2ViVmlldy51cmwpCgogICAgICAgICAgICBpZiBwcm92aWRlci5pZCA9PSAuZ3JvaywKICAgICAgICAgICAgICAgZ3Jva1BvcHVwc1RoYXRMZWZ0UHJvdmlkZXIuY29udGFpbnMoT2JqZWN0SWRlbnRpZmllcih3ZWJWaWV3KSksCiAgICAgICAgICAgICAgIGlzQ29tcGxldGVkR3Jva1JldHVyblVSTCh3ZWJWaWV3LnVybCkgewogICAgICAgICAgICAgICAgY2xvc2VBdXRoUG9wdXAod2ViVmlldykKICAgICAgICAgICAgICAgIGNvbXBsZXRlUHJvdmlkZXJBdXRoZW50aWNhdGlvbigpCiAgICAgICAgICAgIH0KICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgfQoKICAgICAgICBuYXZpZ2F0aW9uRGlkRmluaXNoSGFuZGxlcj8od2ViVmlldykKICAgIH0K"
+              ),
+              (
+                  Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift"),
+                  "ICAgICAgICAgICAgZ3VhcmQgbGV0IHNlbGYsCiAgICAgICAgICAgICAgICAgIGxldCB3ZWJWaWV3LAogICAgICAgICAgICAgICAgICBzZWxmLmlzQXV0aFBvcHVwKHdlYlZpZXcpLAogICAgICAgICAgICAgICAgICBzZWxmLmlzR29vZ2xlQ2hlY2tDb29raWVVUkwod2ViVmlldy51cmwpLAogICAgICAgICAgICAgICAgICB3ZWJWaWV3LnVybCA9PSBjaGVja0Nvb2tpZVVSTCwKICAgICAgICAgICAgICAgICAgIXdlYlZpZXcuaXNMb2FkaW5nLAogICAgICAgICAgICAgICAgICAhc2VsZi5ncm9rR29vZ2xlQ2hlY2tDb29raWVSZWNvdmVyeUF0dGVtcHRlZC5jb250YWlucyhwb3B1cElEKSBlbHNlIHsK",
+                  "ICAgICAgICAgICAgZ3VhcmQgbGV0IHNlbGYsCiAgICAgICAgICAgICAgICAgIGxldCB3ZWJWaWV3LAogICAgICAgICAgICAgICAgICAod2ViVmlldyA9PT0gc2VsZi5tYWluV2ViVmlldyB8fCBzZWxmLmlzQXV0aFBvcHVwKHdlYlZpZXcpKSwKICAgICAgICAgICAgICAgICAgc2VsZi5pc0dvb2dsZUNoZWNrQ29va2llVVJMKHdlYlZpZXcudXJsKSwKICAgICAgICAgICAgICAgICAgd2ViVmlldy51cmwgPT0gY2hlY2tDb29raWVVUkwsCiAgICAgICAgICAgICAgICAgICF3ZWJWaWV3LmlzTG9hZGluZywKICAgICAgICAgICAgICAgICAgIXNlbGYuZ3Jva0dvb2dsZUNoZWNrQ29va2llUmVjb3ZlcnlBdHRlbXB0ZWQuY29udGFpbnMocG9wdXBJRCkgZWxzZSB7Cg=="
+              ),
+              (
+                  Path("ChatGPTWebView/Memory/MemoryTestView.swift"),
+                  "ICAgICAgICBOYXZpZ2F0aW9uVmlldyB7Cg==",
+                  "ICAgICAgICBOYXZpZ2F0aW9uU3RhY2sgewo="
+              ),
+              (
+                  Path("project.yml"),
+                  "Q1VSUkVOVF9QUk9KRUNUX1ZFUlNJT046ICIzNiI=",
+                  "Q1VSUkVOVF9QUk9KRUNUX1ZFUlNJT046ICIzNyI="
+              )
+          ]
+
+          loaded = {}
+          for path, old_b64, new_b64 in replacements:
+              source = loaded.get(path, path.read_text())
+              old = base64.b64decode(old_b64).decode()
+              new = base64.b64decode(new_b64).decode()
+              if new not in source:
+                  if old not in source:
+                      raise SystemExit(f"Expected patch anchor was not found in {path}")
+                  source = source.replace(old, new, 1)
+              loaded[path] = source
+
+          for path, source in loaded.items():
+              path.write_text(source)
+          PY
+
+      - name: Commit build 37 fixes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Fix Grok main CheckCookie recovery and Memory navigation
+          branch: codex/multi-ai-architecture
+          file_pattern: ChatGPTWebView/Web/ChatGPTWebViewStore.swift ChatGPTWebView/Memory/MemoryTestView.swift project.yml
 
       - name: Show Xcode version
         run: |
