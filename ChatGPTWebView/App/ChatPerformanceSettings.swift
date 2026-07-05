@@ -5,11 +5,13 @@ struct ChatPerformanceConfiguration: Equatable {
     let isEnabled: Bool
     let visibleMessageLimit: Int
     let enabledProviderIDs: Set<AIProviderID>
+    let chatGPTMobileWebFallbackEnabled: Bool
 
     static let disabled = ChatPerformanceConfiguration(
         isEnabled: false,
         visibleMessageLimit: 5,
-        enabledProviderIDs: []
+        enabledProviderIDs: [],
+        chatGPTMobileWebFallbackEnabled: false
     )
 
     func isEnabled(for providerID: AIProviderID) -> Bool {
@@ -46,9 +48,19 @@ final class ChatPerformanceSettings: ObservableObject {
         }
     }
 
+    @Published var chatGPTMobileWebFallbackEnabled: Bool {
+        didSet {
+            userDefaults.set(
+                chatGPTMobileWebFallbackEnabled,
+                forKey: Self.chatGPTMobileWebFallbackEnabledKey
+            )
+        }
+    }
+
     private static let enabledKey = "ChatPerformanceEnabled"
     private static let visibleMessageLimitKey = "ChatPerformanceVisibleMessageLimit"
     private static let enabledProviderIDsKey = "ChatPerformanceEnabledProviderIDs"
+    private static let chatGPTMobileWebFallbackEnabledKey = "ChatGPTMobileWebFallbackEnabled"
 
     private let userDefaults: UserDefaults
 
@@ -69,13 +81,18 @@ final class ChatPerformanceSettings: ObservableObject {
         } else {
             self.enabledProviderIDs = [.chatGPT, .claude]
         }
+
+        self.chatGPTMobileWebFallbackEnabled = userDefaults.bool(
+            forKey: Self.chatGPTMobileWebFallbackEnabledKey
+        )
     }
 
     var configuration: ChatPerformanceConfiguration {
         ChatPerformanceConfiguration(
             isEnabled: isEnabled,
             visibleMessageLimit: visibleMessageLimit,
-            enabledProviderIDs: enabledProviderIDs
+            enabledProviderIDs: enabledProviderIDs,
+            chatGPTMobileWebFallbackEnabled: chatGPTMobileWebFallbackEnabled
         )
     }
 
