@@ -35,12 +35,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Capture base Git tree SHA
+      - name: Capture PR head Git tree SHA
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
-          git rev-parse 'HEAD^{tree}' | tee build/base-tree-sha.txt
+          HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git rev-parse "$HEAD_SHA^{tree}" | tee build/base-tree-sha.txt
 
       - name: Apply Grok OAuth coordinator fix
         shell: bash
