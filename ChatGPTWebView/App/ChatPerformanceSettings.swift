@@ -4,18 +4,20 @@ import Foundation
 struct ChatPerformanceConfiguration: Equatable {
     let isEnabled: Bool
     let visibleMessageLimit: Int
+    let latestExchangeOnly: Bool
     let enabledProviderIDs: Set<AIProviderID>
     let chatGPTMobileWebFallbackEnabled: Bool
 
     static let disabled = ChatPerformanceConfiguration(
         isEnabled: false,
         visibleMessageLimit: 5,
+        latestExchangeOnly: false,
         enabledProviderIDs: [],
         chatGPTMobileWebFallbackEnabled: false
     )
 
     func isEnabled(for providerID: AIProviderID) -> Bool {
-        isEnabled && enabledProviderIDs.contains(providerID)
+        (isEnabled || latestExchangeOnly) && enabledProviderIDs.contains(providerID)
     }
 }
 
@@ -41,6 +43,12 @@ final class ChatPerformanceSettings: ObservableObject {
         }
     }
 
+    @Published var latestExchangeOnly: Bool {
+        didSet {
+            userDefaults.set(latestExchangeOnly, forKey: Self.latestExchangeOnlyKey)
+        }
+    }
+
     @Published private(set) var enabledProviderIDs: Set<AIProviderID> {
         didSet {
             let values = enabledProviderIDs.map(\.rawValue).sorted()
@@ -59,6 +67,7 @@ final class ChatPerformanceSettings: ObservableObject {
 
     private static let enabledKey = "ChatPerformanceEnabled"
     private static let visibleMessageLimitKey = "ChatPerformanceVisibleMessageLimit"
+    private static let latestExchangeOnlyKey = "ChatPerformanceLatestExchangeOnly"
     private static let enabledProviderIDsKey = "ChatPerformanceEnabledProviderIDs"
     private static let chatGPTMobileWebFallbackEnabledKey = "ChatGPTMobileWebFallbackEnabled"
 
@@ -75,6 +84,7 @@ final class ChatPerformanceSettings: ObservableObject {
 
         let storedLimit = userDefaults.integer(forKey: Self.visibleMessageLimitKey)
         self.visibleMessageLimit = Self.normalizedVisibleMessageLimit(storedLimit == 0 ? 5 : storedLimit)
+        self.latestExchangeOnly = userDefaults.bool(forKey: Self.latestExchangeOnlyKey)
 
         if let storedProviderIDs = userDefaults.stringArray(forKey: Self.enabledProviderIDsKey) {
             self.enabledProviderIDs = Set(storedProviderIDs.compactMap(AIProviderID.init(rawValue:)))
@@ -91,6 +101,7 @@ final class ChatPerformanceSettings: ObservableObject {
         ChatPerformanceConfiguration(
             isEnabled: isEnabled,
             visibleMessageLimit: visibleMessageLimit,
+            latestExchangeOnly: latestExchangeOnly,
             enabledProviderIDs: enabledProviderIDs,
             chatGPTMobileWebFallbackEnabled: chatGPTMobileWebFallbackEnabled
         )
