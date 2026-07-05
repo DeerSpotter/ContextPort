@@ -668,6 +668,13 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
             return nil
         }
 
+        // Keep nested OAuth target=_blank navigation in the existing auth popup.
+        // Creating another full-screen popup here can leave a blank white layer.
+        if isAuthPopup(webView) {
+            webView.load(URLRequest(url: url))
+            return nil
+        }
+
         if shouldUseProviderAuthPopup(url: url, openerURL: webView.url) {
             return createAuthPopupWebView(configuration: configuration, opener: webView, initialURL: url)
         }
@@ -725,15 +732,6 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         let popupID = ObjectIdentifier(popupWebView)
         authPopupWebViews[popupID] = popupWebView
         trackAuthPopupNavigation(popupWebView, url: initialURL)
-
-        // On iOS, some Grok/xAI popup requests can create the child view before
-        // WebKit commits the first navigation into it. Loading the initial request
-        // explicitly keeps the overlay from remaining a blank white WKWebView.
-        if provider.id == .grok {
-            DispatchQueue.main.async { [weak popupWebView] in
-                popupWebView?.load(URLRequest(url: initialURL))
-            }
-        }
 
         return popupWebView
     }
