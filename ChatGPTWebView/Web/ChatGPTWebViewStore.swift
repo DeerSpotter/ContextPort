@@ -556,6 +556,7 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
     private weak var observedCookieStore: WKHTTPCookieStore?
     private var authPopupWebViews: [ObjectIdentifier: WKWebView] = [:]
     private var grokPopupsThatLeftProvider: Set<ObjectIdentifier> = []
+    private var grokGoogleCheckCookieRecoveryAttempted: Set<ObjectIdentifier> = []
     private var claudeSessionCookieSeen = false
     private let internalSchemes = [
         "https",
@@ -609,6 +610,12 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if isAuthPopup(webView) {
             trackAuthPopupNavigation(webView, url: webView.url)
+
+            if provider.id == .grok,
+               isGoogleCheckCookieURL(webView.url) {
+                resumeGrokGoogleCheckCookieIfNeeded(in: webView)
+                return
+            }
 
             if provider.id == .grok,
                grokPopupsThatLeftProvider.contains(ObjectIdentifier(webView)),
@@ -744,6 +751,50 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         webView.removeFromSuperview()
         authPopupWebViews.removeValue(forKey: popupID)
         grokPopupsThatLeftProvider.remove(popupID)
+        grokGoogleCheckCookieRecoveryAttempted.remove(popupID)
+    }
+
+    private func isGoogleCheckCookieURL(_ url: URL?) -> Bool {
+        guard let url,
+              url.host?.lowercased() == "accounts.google.com" else {
+            return false
+        }
+
+        return url.path.caseInsensitiveCompare("/CheckCookie") == .orderedSame
+    }
+
+    private func resumeGrokGoogleCheckCookieIfNeeded(in webView: WKWebView) {
+        let popupID = ObjectIdentifier(webView)
+        guard !grokGoogleCheckCookieRecoveryAttempted.contains(popupID) else {
+            return
+        }
+
+        let checkCookieURL = webView.url
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak webView] in
+            guard let self,
+                  let webView,
+                  self.isAuthPopup(webView),
+                  self.isGoogleCheckCookieURL(webView.url),
+                  webView.url == checkCookieURL,
+                  !webView.isLoading,
+                  !self.grokGoogleCheckCookieRecoveryAttempted.contains(popupID) else {
+                return
+            }
+
+            self.grokGoogleCheckCookieRecoveryAttempted.insert(popupID)
+
+            let submitScript = #"""
+            (() => {
+              const form = document.forms && document.forms[0];
+              if (!form) return false;
+              HTMLFormElement.prototype.submit.call(form);
+              return true;
+            })();
+            """#
+
+            webView.evaluateJavaScript(submitScript, completionHandler: nil)
+        }
     }
 
     private func completeProviderAuthentication() {
