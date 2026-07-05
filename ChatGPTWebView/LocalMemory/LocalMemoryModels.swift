@@ -85,6 +85,7 @@ struct LocalMemoryEntry: Codable, Identifiable, Sendable, Hashable {
         self.revisions = revisions.isEmpty
             ? [
                 LocalMemoryRevision(
+                    id: id,
                     number: 1,
                     createdAt: createdAt,
                     source: source,
@@ -119,6 +120,7 @@ struct LocalMemoryEntry: Codable, Identifiable, Sendable, Hashable {
         if decodedRevisions.isEmpty {
             self.revisions = [
                 LocalMemoryRevision(
+                    id: id,
                     number: 1,
                     createdAt: createdAt,
                     source: source,
