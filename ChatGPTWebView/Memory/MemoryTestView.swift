@@ -113,8 +113,15 @@ struct MemoryTestView: View {
                     HStack(spacing: 10) {
                         Image(systemName: selectedEntryIDs.contains(entry.id) ? "checkmark.circle.fill" : "circle")
                             .foregroundColor(selectedEntryIDs.contains(entry.id) ? .accentColor : .secondary)
-                        Text(entry.title)
-                            .lineLimit(2)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.title)
+                                .lineLimit(2)
+                            Text(revisionLabel(for: entry))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
                         Spacer(minLength: 0)
                     }
                     .contentShape(Rectangle())
@@ -127,8 +134,13 @@ struct MemoryTestView: View {
                     LocalMemoryDetailView(entry: entry)
                         .environmentObject(appModel)
                 } label: {
-                    Text(entry.title)
-                        .lineLimit(2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.title)
+                            .lineLimit(2)
+                        Text(revisionLabel(for: entry))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Button {
@@ -143,6 +155,10 @@ struct MemoryTestView: View {
                 .accessibilityLabel(entry.isFavorite ? "Remove from Favorites" : "Add to Favorites")
             }
         }
+    }
+
+    private func revisionLabel(for entry: LocalMemoryEntry) -> String {
+        "\(entry.revisionCount) \(entry.revisionCount == 1 ? \"revision\" : \"revisions\")"
     }
 
     private func toggleSelection(_ entry: LocalMemoryEntry) {
@@ -170,7 +186,7 @@ struct MemoryTestView: View {
             try? store.deleteEntry(entries[offset])
         }
         appModel.reloadLocalMemory()
-        appModel.statusMessage = "Deleted saved chat."
+        appModel.statusMessage = "Deleted Memory and its revisions."
     }
 }
 
