@@ -35,6 +35,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Apply Grok OAuth coordinator fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import base64
+          from pathlib import Path
+          source_path = Path("ChatGPTWebView/Web/ChatGPTWebViewStore.swift")
+          source = source_path.read_text()
+          old_guard = base64.b64decode("ICAgICAgICBndWFyZCBuYXZpZ2F0aW9uQWN0aW9uLnRhcmdldEZyYW1lID09IG5pbCwKICAgICAgICAgICAgICBsZXQgdXJsID0gbmF2aWdhdGlvbkFjdGlvbi5yZXF1ZXN0LnVybCBlbHNlIHsKICAgICAgICAgICAgcmV0dXJuIG5pbAogICAgICAgIH0KCiAgICAgICAgaWYgc2hvdWxkVXNlUHJvdmlkZXJBdXRoUG9wdXAodXJsOiB1cmwsIG9wZW5lclVSTDogd2ViVmlldy51cmwpIHsK").decode()
+          fixed_guard = base64.b64decode("ICAgICAgICBndWFyZCBuYXZpZ2F0aW9uQWN0aW9uLnRhcmdldEZyYW1lID09IG5pbCwKICAgICAgICAgICAgICBsZXQgdXJsID0gbmF2aWdhdGlvbkFjdGlvbi5yZXF1ZXN0LnVybCBlbHNlIHsKICAgICAgICAgICAgcmV0dXJuIG5pbAogICAgICAgIH0KCiAgICAgICAgLy8gS2VlcCBuZXN0ZWQgT0F1dGggdGFyZ2V0PV9ibGFuayBuYXZpZ2F0aW9uIGluIHRoZSBleGlzdGluZyBhdXRoIHBvcHVwLgogICAgICAgIC8vIENyZWF0aW5nIGFub3RoZXIgZnVsbC1zY3JlZW4gcG9wdXAgaGVyZSBjYW4gbGVhdmUgYSBibGFuayB3aGl0ZSBsYXllci4KICAgICAgICBpZiBpc0F1dGhQb3B1cCh3ZWJWaWV3KSB7CiAgICAgICAgICAgIHdlYlZpZXcubG9hZChVUkxSZXF1ZXN0KHVybDogdXJsKSkKICAgICAgICAgICAgcmV0dXJuIG5pbAogICAgICAgIH0KCiAgICAgICAgaWYgc2hvdWxkVXNlUHJvdmlkZXJBdXRoUG9wdXAodXJsOiB1cmwsIG9wZW5lclVSTDogd2ViVmlldy51cmwpIHsK").decode()
+          duplicate_load = base64.b64decode("CiAgICAgICAgLy8gT24gaU9TLCBzb21lIEdyb2sveEFJIHBvcHVwIHJlcXVlc3RzIGNhbiBjcmVhdGUgdGhlIGNoaWxkIHZpZXcgYmVmb3JlCiAgICAgICAgLy8gV2ViS2l0IGNvbW1pdHMgdGhlIGZpcnN0IG5hdmlnYXRpb24gaW50byBpdC4gTG9hZGluZyB0aGUgaW5pdGlhbCByZXF1ZXN0CiAgICAgICAgLy8gZXhwbGljaXRseSBrZWVwcyB0aGUgb3ZlcmxheSBmcm9tIHJlbWFpbmluZyBhIGJsYW5rIHdoaXRlIFdLV2ViVmlldy4KICAgICAgICBpZiBwcm92aWRlci5pZCA9PSAuZ3JvayB7CiAgICAgICAgICAgIERpc3BhdGNoUXVldWUubWFpbi5hc3luYyB7IFt3ZWFrIHBvcHVwV2ViVmlld10gaW4KICAgICAgICAgICAgICAgIHBvcHVwV2ViVmlldz8ubG9hZChVUkxSZXF1ZXN0KHVybDogaW5pdGlhbFVSTCkpCiAgICAgICAgICAgIH0KICAgICAgICB9Cg==").decode()
+          if fixed_guard not in source:
+              if old_guard not in source:
+                  raise SystemExit("Expected Grok popup guard was not found")
+              source = source.replace(old_guard, fixed_guard, 1)
+          if duplicate_load in source:
+              source = source.replace(duplicate_load, "", 1)
+          source_path.write_text(source)
+          if fixed_guard not in source_path.read_text():
+              raise SystemExit("Grok nested popup fix was not applied")
+          if duplicate_load in source_path.read_text():
+              raise SystemExit("Duplicate Grok popup load still exists")
+          PY
+
       - name: Show Xcode version
         run: |
           xcodebuild -version
