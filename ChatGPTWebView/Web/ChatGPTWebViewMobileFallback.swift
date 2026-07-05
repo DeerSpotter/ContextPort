@@ -2,7 +2,31 @@ import Foundation
 import WebKit
 
 private final class ChatGPTMobileFallbackState: NSObject {
+    var isEnabled = false
     var isScriptInstalled = false
+    var bridge: ChatGPTMobileFallbackScriptBridge?
+}
+
+private final class ChatGPTMobileFallbackScriptBridge: NSObject, WKScriptMessageHandler {
+    weak var store: ChatGPTWebViewStore?
+
+    init(store: ChatGPTWebViewStore) {
+        self.store = store
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.name == ChatGPTWebViewStore.chatGPTMobileFallbackReadyMessageName else {
+            return
+        }
+
+        let store = self.store
+        Task { @MainActor in
+            store?.applyChatGPTMobileWebFallbackToPage()
+        }
+    }
 }
 
 @MainActor
@@ -27,13 +51,22 @@ private final class ChatGPTMobileFallbackRegistry {
 
 @MainActor
 extension ChatGPTWebViewStore {
+    static let chatGPTMobileFallbackReadyMessageName = "contextPortChatGPTMobileFallbackReady"
+
     func updateChatGPTMobileWebFallback(_ isEnabled: Bool) {
         guard provider.id == .chatGPT else { return }
 
         let state = ChatGPTMobileFallbackRegistry.shared.state(for: self)
+        state.isEnabled = isEnabled
         installChatGPTMobileFallbackScriptIfNeeded(state: state)
+        applyChatGPTMobileWebFallbackToPage()
+    }
 
-        let enabledLiteral = isEnabled ? "true" : "false"
+    func applyChatGPTMobileWebFallbackToPage() {
+        guard provider.id == .chatGPT else { return }
+
+        let state = ChatGPTMobileFallbackRegistry.shared.state(for: self)
+        let enabledLiteral = state.isEnabled ? "true" : "false"
         let script = #"""
         (() => {
           const enabledKey = 'contextport_chatgpt_mweb_fallback_enabled';
@@ -52,7 +85,7 @@ extension ChatGPTWebViewStore {
             }
           };
 
-          const URLWithoutFallback = (value) => {
+          const urlWithoutFallback = (value) => {
             const url = new URL(value, location.href);
             url.searchParams.delete('mweb_fallback');
             return url.toString();
@@ -65,7 +98,7 @@ extension ChatGPTWebViewStore {
           if (!isConversationURL(location.href)) return false;
 
           const currentURL = new URL(location.href);
-          const currentBaseURL = URLWithoutFallback(currentURL.toString());
+          const currentBaseURL = urlWithoutFallback(currentURL.toString());
           let ownedURL = '';
           try {
             ownedURL = sessionStorage.getItem(ownedURLKey) || '';
@@ -102,13 +135,25 @@ extension ChatGPTWebViewStore {
     private func installChatGPTMobileFallbackScriptIfNeeded(state: ChatGPTMobileFallbackState) {
         guard !state.isScriptInstalled else { return }
 
-        webView.configuration.userContentController.addUserScript(
+        let bridge = ChatGPTMobileFallbackScriptBridge(store: self)
+        let controller = webView.configuration.userContentController
+        controller.add(bridge, name: Self.chatGPTMobileFallbackReadyMessageName)
+        controller.addUserScript(
             WKUserScript(
                 source: Self.chatGPTMobileFallbackDocumentStartScript,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
         )
+        controller.addUserScript(
+            WKUserScript(
+                source: Self.chatGPTMobileFallbackReadyScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+        )
+
+        state.bridge = bridge
         state.isScriptInstalled = true
     }
 
@@ -146,6 +191,14 @@ extension ChatGPTWebViewStore {
 
       url.searchParams.set('mweb_fallback', '1');
       location.replace(url.toString());
+    })();
+    """#
+
+    private static let chatGPTMobileFallbackReadyScript = #"""
+    (() => {
+      try {
+        window.webkit?.messageHandlers?.contextPortChatGPTMobileFallbackReady?.postMessage('ready');
+      } catch (_) {}
     })();
     """#
 }
