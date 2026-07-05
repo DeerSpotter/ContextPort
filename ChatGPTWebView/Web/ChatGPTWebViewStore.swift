@@ -711,14 +711,29 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         popupWebView.backgroundColor = .systemBackground
         popupWebView.isOpaque = true
 
-        let hostView = mainWebView ?? opener
-        popupWebView.frame = hostView.bounds
+        let sourceView = mainWebView ?? opener
+        let hostView = sourceView.superview ?? sourceView
+        if hostView === sourceView {
+            popupWebView.frame = sourceView.bounds
+        } else {
+            popupWebView.frame = sourceView.convert(sourceView.bounds, to: hostView)
+        }
         popupWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        popupWebView.layer.zPosition = 999
         hostView.addSubview(popupWebView)
 
         let popupID = ObjectIdentifier(popupWebView)
         authPopupWebViews[popupID] = popupWebView
         trackAuthPopupNavigation(popupWebView, url: initialURL)
+
+        // On iOS, some Grok/xAI popup requests can create the child view before
+        // WebKit commits the first navigation into it. Loading the initial request
+        // explicitly keeps the overlay from remaining a blank white WKWebView.
+        if provider.id == .grok {
+            DispatchQueue.main.async { [weak popupWebView] in
+                popupWebView?.load(URLRequest(url: initialURL))
+            }
+        }
 
         return popupWebView
     }
@@ -788,9 +803,13 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
 
         case .grok:
             let authHost = host == "accounts.x.ai"
+                || host == "x.ai"
+                || host.hasSuffix(".x.ai")
                 || host == "x.com"
+                || host.hasSuffix(".x.com")
                 || host == "accounts.google.com"
                 || host == "appleid.apple.com"
+                || host == "challenges.cloudflare.com"
             return authHost
                 || openerPath.hasPrefix("/sign-in")
                 || openerPath.hasPrefix("/signin")
@@ -806,6 +825,7 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         guard provider.id == .grok,
               isAuthPopup(webView),
               let url,
+              url.scheme?.lowercased() == "https",
               !isGrokURL(url) else {
             return
         }
