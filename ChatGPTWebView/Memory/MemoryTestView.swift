@@ -6,7 +6,7 @@ struct MemoryTestView: View {
 
     @State private var selectedSection = MemorySection.all
     @State private var isSelecting = false
-    @State private var isExportingAll = false
+    @State private var isExportingMemories = false
     @State private var isImporting = false
     @State private var isShowingImportPicker = false
     @State private var selectedEntryIDs = Set<UUID>()
@@ -46,9 +46,9 @@ struct MemoryTestView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button {
-                            exportAllMemories()
+                            exportMemories()
                         } label: {
-                            Label("Export All Memories", systemImage: "square.and.arrow.up")
+                            Label(exportMenuTitle, systemImage: "square.and.arrow.up")
                         }
                         .disabled(appModel.localMemoryEntries.isEmpty)
 
@@ -58,13 +58,13 @@ struct MemoryTestView: View {
                             Label("Import Memory ZIP", systemImage: "square.and.arrow.down")
                         }
                     } label: {
-                        if isExportingAll || isImporting {
+                        if isExportingMemories || isImporting {
                             ProgressView()
                         } else {
                             Image(systemName: "archivebox")
                         }
                     }
-                    .disabled(isExportingAll || isImporting)
+                    .disabled(isExportingMemories || isImporting)
                     .accessibilityLabel("Memory import and export")
 
                     Button {
@@ -138,6 +138,22 @@ struct MemoryTestView: View {
         }
     }
 
+    private var exportEntries: [LocalMemoryEntry] {
+        guard !selectedEntryIDs.isEmpty else {
+            return appModel.localMemoryEntries
+        }
+
+        return appModel.localMemoryEntries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private var exportMenuTitle: String {
+        guard !selectedEntryIDs.isEmpty else {
+            return "Export All Memories"
+        }
+
+        return "Export Selected Memories · \(selectedEntryIDs.count)"
+    }
+
     private var emptyMessage: String {
         switch selectedSection {
         case .all:
@@ -206,22 +222,31 @@ struct MemoryTestView: View {
         return "\(entry.revisionCount) \(noun)"
     }
 
-    private func exportAllMemories() {
-        guard !isExportingAll else { return }
-        let entries = appModel.localMemoryEntries
+    private func exportMemories() {
+        guard !isExportingMemories else { return }
+        let entries = exportEntries
         guard !entries.isEmpty else { return }
+        let isSelectedExport = !selectedEntryIDs.isEmpty
 
-        isExportingAll = true
-        appModel.statusMessage = "Preparing ZIP export for all Memories..."
+        isExportingMemories = true
+        if isSelectedExport {
+            appModel.statusMessage = "Preparing ZIP export for \(entries.count) selected Memories..."
+        } else {
+            appModel.statusMessage = "Preparing ZIP export for all Memories..."
+        }
 
         Task { @MainActor in
-            defer { isExportingAll = false }
+            defer { isExportingMemories = false }
             do {
                 let url = try await Task.detached(priority: .userInitiated) {
                     try MemoryExportArchiveBuilder().exportAll(entries: entries)
                 }.value
                 exportShareItem = MemoryExportShareItem(url: url)
-                appModel.statusMessage = "Memory ZIP export is ready to share or save to Files."
+                if isSelectedExport {
+                    appModel.statusMessage = "Selected Memory ZIP export is ready to share or save to Files."
+                } else {
+                    appModel.statusMessage = "Memory ZIP export is ready to share or save to Files."
+                }
             } catch {
                 appModel.statusMessage = "Memory export failed: \(error.localizedDescription)"
             }
