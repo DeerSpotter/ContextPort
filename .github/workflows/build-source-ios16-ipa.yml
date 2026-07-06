@@ -63,7 +63,6 @@ jobs:
           mkdir -p build
           DEPLOYMENT_TARGET="${{ github.event.inputs.deployment_target || '16.0' }}"
 
-          set +e
           xcodebuild clean archive \
             -project ChatGPTWebView.xcodeproj \
             -scheme ChatGPTWebView \
@@ -76,30 +75,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            > build/xcodebuild.log 2>&1
-          BUILD_STATUS=$?
-          set -e
-
-          if [ "$BUILD_STATUS" -ne 0 ]; then
-            grep -E "error:|BUILD FAILED|SwiftCompile|CompileSwift" build/xcodebuild.log > build/xcodebuild-errors.txt || true
-            if [ ! -s build/xcodebuild-errors.txt ]; then
-              tail -n 200 build/xcodebuild.log > build/xcodebuild-errors.txt
-            fi
-            cat build/xcodebuild-errors.txt
-            exit "$BUILD_STATUS"
-          fi
-
-          tail -n 40 build/xcodebuild.log
-
-      - name: Upload build diagnostics on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ContextPort-xcodebuild-errors
-          path: build/xcodebuild-errors.txt
-          if-no-files-found: warn
-          retention-days: 1
+            PROVISIONING_PROFILE_SPECIFIER=""
 
       - name: Package ContextPort unsigned IPA
         shell: bash
