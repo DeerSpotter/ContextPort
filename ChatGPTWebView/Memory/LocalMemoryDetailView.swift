@@ -15,7 +15,7 @@ struct LocalMemoryDetailView: View {
                 Button {
                     launchRequest = MemoryLaunchRequest(entries: [entry])
                 } label: {
-                    Label("Start New Chat", systemImage: "bubble.left.and.bubble.right")
+                    Label("Share Context", systemImage: "bubble.left.and.bubble.right")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -124,9 +124,14 @@ struct LocalMemoryDetailView: View {
     }
 
     private func archiveSizeLabel(url: URL) -> String {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let byteCount = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
-        let size = ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
-        return "ContextPort Loaded Sources.zip • \(size)"
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = values.fileSize else {
+            return url.lastPathComponent
+        }
+
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB]
+        formatter.countStyle = .file
+        return "\(url.lastPathComponent) · \(formatter.string(fromByteCount: Int64(fileSize)))"
     }
 }
