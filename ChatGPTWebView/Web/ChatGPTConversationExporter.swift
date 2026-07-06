@@ -13,24 +13,51 @@ struct ChatConversationExportResult {
 
 enum ChatConversationExportError: LocalizedError {
     case invalidPayload
+    case unsupportedConversationPage
+    case securityInterstitialDetected
     case noMessagesFound
+    case invalidConversationStructure
     case cannotCreatePDF
 
     var errorDescription: String? {
         switch self {
-        case .invalidPayload: return "The AI page did not return a readable export payload."
-        case .noMessagesFound: return "No conversation messages were found. Open a conversation and try again."
-        case .cannotCreatePDF: return "The Markdown export was created, but the PDF renderer could not create a PDF."
+        case .invalidPayload:
+            return "The AI page did not return a readable export payload."
+        case .unsupportedConversationPage:
+            return "ContextPort could not verify that this is a supported AI conversation page. Open a conversation and try again."
+        case .securityInterstitialDetected:
+            return "ContextPort detected a security or bot-check interstitial instead of a readable conversation. Complete the check, return to the conversation, and try Save Context again."
+        case .noMessagesFound:
+            return "No positively identified conversation messages were found. The AI page may have changed or may not be a conversation."
+        case .invalidConversationStructure:
+            return "ContextPort found conversation content but could not verify both a user turn and an AI response. Nothing was saved."
+        case .cannotCreatePDF:
+            return "The Markdown export was created, but the PDF renderer could not create a PDF."
         }
     }
 }
 
+private struct ChatConversationExportTurn: Decodable {
+    let role: String
+    let content: String
+}
+
 private struct ChatConversationExportPayload: Decodable {
     let title: String
-    let markdown: String
-    let messageCount: Int
+    let turns: [ChatConversationExportTurn]
     let sourceURL: String
     let exportedAt: String
+    let error: String?
+}
+
+private struct ValidatedConversationTurn {
+    enum Role {
+        case user
+        case assistant
+    }
+
+    let role: Role
+    let content: String
 }
 
 @MainActor
@@ -46,6 +73,10 @@ final class ChatConversationExporter {
         from webView: WKWebView,
         provider: AIProvider
     ) async throws -> ChatConversationExportResult {
+        guard provider.isAuthenticatedContentURL(webView.url) else {
+            throw ChatConversationExportError.unsupportedConversationPage
+        }
+
         let raw = try await evaluateJavaScript(
             extractionJavaScript(provider: provider),
             in: webView
@@ -56,26 +87,101 @@ final class ChatConversationExporter {
         }
 
         let payload = try JSONDecoder().decode(ChatConversationExportPayload.self, from: data)
-        let markdown = payload.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard payload.messageCount > 0, !markdown.isEmpty else {
+        if payload.error == "security-interstitial" {
+            throw ChatConversationExportError.securityInterstitialDetected
+        }
+
+        let turns = payload.turns.compactMap(validateTurn)
+        guard !turns.isEmpty else {
             throw ChatConversationExportError.noMessagesFound
         }
 
+        guard turns.contains(where: { $0.role == .user }),
+              turns.contains(where: { $0.role == .assistant }) else {
+            throw ChatConversationExportError.invalidConversationStructure
+        }
+
+        let title = payload.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let exportedAt = payload.exportedAt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceURL = payload.sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let markdown = makeMarkdown(
+            title: title.isEmpty ? "\(provider.displayName) Conversation" : title,
+            turns: turns,
+            sourceURL: sourceURL,
+            exportedAt: exportedAt,
+            provider: provider
+        )
+
+        let messageCount = turns.count
         let pdfData = try makePDFData(
-            title: payload.title,
+            title: title,
             markdown: markdown,
-            sourceURL: payload.sourceURL,
-            exportedAt: payload.exportedAt,
-            messageCount: payload.messageCount
+            sourceURL: sourceURL,
+            exportedAt: exportedAt,
+            messageCount: messageCount
         )
         return ChatConversationExportResult(
-            title: payload.title,
+            title: title.isEmpty ? "\(provider.displayName) Conversation" : title,
             markdown: markdown,
-            messageCount: payload.messageCount,
-            sourceURL: payload.sourceURL,
-            exportedAt: payload.exportedAt,
+            messageCount: messageCount,
+            sourceURL: sourceURL,
+            exportedAt: exportedAt,
             pdfData: pdfData
         )
+    }
+
+    private static func validateTurn(_ turn: ChatConversationExportTurn) -> ValidatedConversationTurn? {
+        let role: ValidatedConversationTurn.Role
+        switch turn.role.lowercased() {
+        case "user": role = .user
+        case "assistant": role = .assistant
+        default: return nil
+        }
+
+        let content = turn.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard content.count >= 5, !containsSecurityInterstitialMarker(content) else {
+            return nil
+        }
+        return ValidatedConversationTurn(role: role, content: content)
+    }
+
+    private static func containsSecurityInterstitialMarker(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        return lower.contains("__cf$cv$params")
+            || lower.contains("/cdn-cgi/challenge-platform/")
+            || lower.contains("cf-turnstile")
+            || lower.contains("challenge-platform/scripts")
+    }
+
+    private static func makeMarkdown(
+        title: String,
+        turns: [ValidatedConversationTurn],
+        sourceURL: String,
+        exportedAt: String,
+        provider: AIProvider
+    ) -> String {
+        var lines = [
+            "# \(title)",
+            "",
+            "**Exported:** \(exportedAt)",
+            "**Source:** \(sourceURL)",
+            "**Messages:** \(turns.count)",
+            "",
+            "---",
+            ""
+        ]
+
+        for turn in turns {
+            let sender = turn.role == .user ? "You" : provider.displayName
+            lines.append("### **\(sender)**")
+            lines.append("")
+            lines.append(turn.content)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        }
+
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
     }
 
     private static func evaluateJavaScript(_ script: String, in webView: WKWebView) async throws -> Any {
@@ -136,16 +242,21 @@ final class ChatConversationExporter {
     }
 
     private static func extractionJavaScript(provider: AIProvider) -> String {
+        let providerIDs = javascriptArray([provider.id.rawValue])
         let providerNames = javascriptArray([provider.displayName])
         let providerURLs = javascriptArray([provider.startURL.absoluteString])
 
         return #"""
         (() => {
+          const providerID = \#(providerIDs)[0];
           const providerName = \#(providerNames)[0];
           const providerStartURL = \#(providerURLs)[0];
           const normalize = v => String(v || '').replace(/\u00a0/g,' ').replace(/\r\n?/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
           const all = (root, selector) => { try { return Array.from(root.querySelectorAll(selector)); } catch { return []; } };
           const text = el => normalize(el ? (el.innerText || el.textContent || '') : '');
+          const topLevel = items => items.filter((item, index) => !items.some((other, otherIndex) => otherIndex !== index && other.contains(item)));
+          const interstitialMarkers = [/__CF\$cv\$params/i,/\/cdn-cgi\/challenge-platform\//i,/cf-turnstile/i,/challenge-platform\/scripts/i];
+          const isInterstitial = value => interstitialMarkers.some(pattern => pattern.test(String(value || '')));
           const title = (() => {
             for (const selector of ['h1:not([class*=hidden])','[data-testid*=conversation-title]','[class*=conversation-title]','[aria-label*=conversation][aria-label*=title]']) {
               const value = normalize(document.querySelector(selector)?.textContent || '');
@@ -165,30 +276,6 @@ final class ChatConversationExporter {
               ? doc
               : `${providerName} Conversation`;
           })();
-          const topLevel = items => items.filter((item, index) => !items.some((other, otherIndex) => otherIndex !== index && other.contains(item)));
-          const valid = el => el && !el.matches?.('nav,aside,header,footer,form,menu') && (text(el).length >= 5 || all(el,'pre,code-block,table,img,canvas,video,audio').length > 0) && text(el).length < 300000;
-          const findMessages = () => {
-            for (const selector of ['[data-message-author-role]','article[data-testid*=conversation-turn]','div[data-testid*=conversation-turn]','.group\\/conversation-turn','[data-message-id]','main article','main [data-testid*=message]','main [class*=message]','main [role=listitem]']) {
-              const found = topLevel(all(document, selector)).filter(valid);
-              if (found.length > 0) return found;
-            }
-            const main = document.querySelector('main,[role=main],[class*=conversation],[class*=chat]') || document.body;
-            return topLevel(Array.from(main.children || [])).filter(valid);
-          };
-          const roleFor = (node, index) => {
-            const roleNode = node.matches?.('[data-message-author-role]') ? node : node.querySelector?.('[data-message-author-role]');
-            const role = String(roleNode?.getAttribute('data-message-author-role') || '').toLowerCase();
-            if (role === 'user') return 'You';
-            if (role === 'assistant') return providerName;
-            const labels = normalize([
-              node.getAttribute?.('aria-label'),
-              node.getAttribute?.('data-testid'),
-              node.getAttribute?.('class')
-            ].filter(Boolean).join(' ')).toLowerCase();
-            if (/user|human|prompt/.test(labels)) return 'You';
-            if (/assistant|response|answer|model/.test(labels)) return providerName;
-            return index % 2 === 0 ? 'You' : providerName;
-          };
           const fenceFor = code => '`'.repeat(((String(code).match(/`{3,}/g) || []).reduce((m, r) => Math.max(m, r.length), 2)) + 1);
           const tableMD = table => {
             const rows = Array.from(table.querySelectorAll('tr')).map(row => Array.from(row.children).filter(cell => ['TH','TD'].includes(cell.tagName)).map(cell => normalize(cell.innerText || cell.textContent || '').replace(/\|/g,'\\|') || ' ')).filter(row => row.length);
@@ -199,29 +286,86 @@ final class ChatConversationExporter {
           };
           const serialize = root => {
             const clone = root.cloneNode(true);
-            all(clone, 'button,svg,style,script,textarea,input,[contenteditable=true],[aria-label*=Copy],[aria-label*=More],[data-testid*=copy]').forEach(node => node.remove());
+            all(clone, 'button,svg,style,script,textarea,input,[contenteditable=true],[aria-label*=Copy],[aria-label*=More],[data-testid*=copy],[class*=sr-only],[class*=visually-hidden]').forEach(node => node.remove());
             topLevel(all(clone, 'pre,code-block,[data-testid*=code-block]')).forEach(block => { const code = (block.querySelector?.('code')?.innerText || block.innerText || block.textContent || '').replace(/\u00a0/g,' ').trimEnd(); const fence = fenceFor(code); block.replaceWith(document.createTextNode(`\n\n${fence}\n${code}\n${fence}\n\n`)); });
             topLevel(all(clone, 'table')).forEach(table => table.replaceWith(document.createTextNode(`\n\n${tableMD(table)}\n\n`)));
             all(clone, 'a[href]').forEach(link => { const href = String(link.href || link.getAttribute('href') || '').trim(); if (!href || /^(javascript|data|vbscript):/i.test(href)) return; const label = normalize(link.innerText || link.textContent || href).replace(/[\[\]]/g,''); link.replaceWith(document.createTextNode(`[${label}](${href.replace(/\)/g,'%29')})`)); });
             all(clone, 'img,canvas,video,audio').forEach(media => media.replaceWith(document.createTextNode(`[${media.tagName.toLowerCase()}]`)));
             return text(clone);
           };
-          const seen = new Set();
-          const messages = [];
-          findMessages().forEach((node, index) => {
-            const contentRoot = node.matches?.('[data-message-author-role]') ? node : (node.querySelector?.('[data-message-author-role]') || node);
-            const content = serialize(contentRoot);
-            if (!content || content.length < 5) return;
-            const sender = roleFor(node, index);
-            const key = `${sender}:${content.slice(0,220)}`;
+          const pushTurn = (turns, seen, role, content) => {
+            const value = normalize(content);
+            if (!['user','assistant'].includes(role) || value.length < 5 || value.length >= 300000 || isInterstitial(value)) return;
+            const key = `${role}:${value.slice(0,220)}`;
             if (seen.has(key)) return;
-            seen.add(key); messages.push({ sender, content });
-          });
+            seen.add(key);
+            turns.push({ role, content: value });
+          };
+          const extractChatGPT = () => {
+            const turns = [], seen = new Set();
+            topLevel(all(document, '[data-message-author-role]')).forEach(node => {
+              const role = String(node.getAttribute('data-message-author-role') || '').toLowerCase();
+              pushTurn(turns, seen, role, serialize(node));
+            });
+            return turns;
+          };
+          const extractClaude = () => {
+            const turns = [], seen = new Set();
+            const list = document.querySelector('[data-testid="virtual-message-list"]');
+            if (!list) return turns;
+            all(list, '[data-index]').forEach(row => {
+              const user = row.querySelector('[data-testid="user-message"]');
+              if (user) {
+                pushTurn(turns, seen, 'user', serialize(user));
+                return;
+              }
+              const responseBlocks = topLevel(all(row, '.standard-markdown,.progressive-markdown,.font-claude-response-body'));
+              const responseHeading = all(row, 'h1,h2,h3').some(heading => /^Claude responded:/i.test(text(heading)));
+              if (responseBlocks.length > 0 || responseHeading) {
+                const content = responseBlocks.length > 0
+                  ? responseBlocks.map(serialize).filter(Boolean).join('\n\n')
+                  : serialize(row);
+                pushTurn(turns, seen, 'assistant', content);
+              }
+            });
+            return turns;
+          };
+          const extractGrok = () => {
+            const turns = [], seen = new Set();
+            topLevel(all(document, '[data-testid="user-message"],[data-testid="assistant-message"]')).forEach(node => {
+              const testID = String(node.getAttribute('data-testid') || '').toLowerCase();
+              const role = testID === 'user-message' ? 'user' : testID === 'assistant-message' ? 'assistant' : '';
+              pushTurn(turns, seen, role, serialize(node));
+            });
+            return turns;
+          };
+          const extractGemini = () => {
+            const turns = [], seen = new Set();
+            const selectors = 'user-query,model-response,[data-message-author-role],[data-test-id="user-query"],[data-test-id="model-response"],[data-testid="user-query"],[data-testid="model-response"]';
+            topLevel(all(document, selectors)).forEach(node => {
+              const explicitRole = String(node.getAttribute('data-message-author-role') || '').toLowerCase();
+              const identity = [node.tagName,node.getAttribute('data-test-id'),node.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase();
+              const role = explicitRole === 'user' || /user-query/.test(identity)
+                ? 'user'
+                : explicitRole === 'assistant' || /model-response/.test(identity)
+                  ? 'assistant'
+                  : '';
+              pushTurn(turns, seen, role, serialize(node));
+            });
+            return turns;
+          };
+          const extractor = {
+            chatgpt: extractChatGPT,
+            claude: extractClaude,
+            gemini: extractGemini,
+            grok: extractGrok
+          }[providerID];
+          const turns = extractor ? extractor() : [];
           const exportedAt = new Date().toISOString();
-          const body = messages.flatMap(m => [`### **${m.sender}**`,'',m.content,'','---','']);
           const source = window.location.href || providerStartURL;
-          const header = [`# ${title}`,'',`**Exported:** ${exportedAt}`,`**Source:** ${source}`,`**Messages:** ${messages.length}`,'','---',''];
-          return JSON.stringify({ title, markdown: header.concat(body).join('\n').trim() + '\n', messageCount: messages.length, sourceURL: source, exportedAt });
+          const pageHasInterstitial = isInterstitial(document.documentElement?.innerHTML || '') || isInterstitial(text(document.body));
+          const error = turns.length === 0 && pageHasInterstitial ? 'security-interstitial' : null;
+          return JSON.stringify({ title, turns, sourceURL: source, exportedAt, error });
         })();
         """#
     }
