@@ -428,7 +428,86 @@ extension ChatGPTWebViewStore {
         return (value as? Bool) == true
     }
 
+    private func waitForStableComposerReady() async -> Bool {
+        let readinessScript = #"""
+        (() => {
+          const selectors = [
+            'textarea',
+            '[contenteditable="true"]',
+            '.ProseMirror',
+            '[data-testid="composer"] [contenteditable="true"]',
+            '[data-testid="composer"] textarea',
+            'form textarea',
+            'form [contenteditable="true"]'
+          ];
+
+          const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return r.width > 80 && r.height > 12 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+
+          for (const selector of selectors) {
+            const candidates = Array.from(document.querySelectorAll(selector)).filter(visible);
+            if (candidates.length > 0) return true;
+          }
+          return false;
+        })();
+        """#
+
+        var stableURL: URL?
+        var stableChecks = 0
+
+        for _ in 0..<150 {
+            guard !Task.isCancelled else { return false }
+
+            if !webView.isLoading,
+               let currentURL = webView.url,
+               provider.isAuthenticatedContentURL(currentURL) {
+                let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+                    webView.evaluateJavaScript(readinessScript) { value, error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume(returning: value)
+                        }
+                    }
+                }
+
+                if (value as? Bool) == true,
+                   !webView.isLoading,
+                   webView.url == currentURL {
+                    if stableURL == currentURL {
+                        stableChecks += 1
+                    } else {
+                        stableURL = currentURL
+                        stableChecks = 1
+                    }
+
+                    if stableChecks >= 2 {
+                        return true
+                    }
+                } else {
+                    stableURL = nil
+                    stableChecks = 0
+                }
+            } else {
+                stableURL = nil
+                stableChecks = 0
+            }
+
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        return false
+    }
+
     func injectComposerText(_ text: String) async -> Bool {
+        guard await waitForStableComposerReady() else {
+            return false
+        }
+
         let encodedText: String
         if let data = try? JSONSerialization.data(withJSONObject: [text], options: []),
            let json = String(data: data, encoding: .utf8) {
@@ -436,8 +515,6 @@ extension ChatGPTWebViewStore {
         } else {
             encodedText = "[\"\"]"
         }
-
-        try? await Task.sleep(nanoseconds: 300_000_000)
 
         let script = """
         (() => {

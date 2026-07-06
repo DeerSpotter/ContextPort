@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 private struct AIProfileSessionKey: Hashable {
     let providerID: AIProviderID
@@ -53,6 +54,7 @@ final class ChatGPTProfileSessionPool: ObservableObject {
         let key = AIProfileSessionKey(providerID: provider.id, profileID: profile.id)
         if let existing = stores[key] {
             existing.updateChatPerformanceConfiguration(chatPerformanceConfiguration)
+            existing.updateLatestExchangeConfiguration(chatPerformanceConfiguration)
             existing.updateChatGPTMobileWebFallback(
                 chatPerformanceConfiguration.chatGPTMobileWebFallbackEnabled
             )
@@ -119,6 +121,7 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             }
         )
         store.updateChatPerformanceConfiguration(chatPerformanceConfiguration)
+        store.updateLatestExchangeConfiguration(chatPerformanceConfiguration)
         store.updateChatGPTMobileWebFallback(
             chatPerformanceConfiguration.chatGPTMobileWebFallbackEnabled
         )
@@ -134,7 +137,33 @@ final class ChatGPTProfileSessionPool: ObservableObject {
         chatPerformanceConfiguration = configuration
         for store in stores.values {
             store.updateChatPerformanceConfiguration(configuration)
+            store.updateLatestExchangeConfiguration(configuration)
             store.updateChatGPTMobileWebFallback(configuration.chatGPTMobileWebFallbackEnabled)
+        }
+    }
+
+    func developerSourceSessions() -> [DeveloperWebViewSession] {
+        stores.compactMap { key, store in
+            guard store.webView.url != nil else { return nil }
+
+            let normalizedProfileID = key.profileID.lowercased()
+            let profileLabel: String
+            if normalizedProfileID.contains("guest") {
+                profileLabel = "Guest"
+            } else if normalizedProfileID.contains("primary") || normalizedProfileID.contains("current") {
+                profileLabel = "Current User"
+            } else {
+                profileLabel = "Profile \(String(key.profileID.prefix(8)))"
+            }
+
+            return DeveloperWebViewSession(
+                id: "\(key.providerID.rawValue)::\(key.profileID)",
+                title: "\(store.provider.displayName) • \(profileLabel)",
+                webView: store.webView
+            )
+        }
+        .sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
     }
 

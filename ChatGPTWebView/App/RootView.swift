@@ -7,6 +7,7 @@ struct RootView: View {
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
     @EnvironmentObject private var profileSessionPool: ChatGPTProfileSessionPool
     @Environment(\.openURL) private var openURL
+    @AppStorage("developerModeEnabled") private var developerModeEnabled = false
     @State private var selectedTab: AppTab = .assistant
     @State private var isShowingProfiles = false
     @State private var isShowingSettings = false
@@ -25,6 +26,14 @@ struct RootView: View {
                     .allowsHitTesting(selectedTab == .memory)
                     .accessibilityHidden(selectedTab != .memory)
                     .zIndex(selectedTab == .memory ? 1 : 0)
+
+                DeveloperSourcesView(
+                    isActive: developerModeEnabled && selectedTab == .developer
+                )
+                .opacity(developerModeEnabled && selectedTab == .developer ? 1 : 0)
+                .allowsHitTesting(developerModeEnabled && selectedTab == .developer)
+                .accessibilityHidden(!developerModeEnabled || selectedTab != .developer)
+                .zIndex(developerModeEnabled && selectedTab == .developer ? 2 : 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, 34)
@@ -67,6 +76,7 @@ struct RootView: View {
             CompactBottomSwitcher(
                 selectedTab: $selectedTab,
                 provider: providerManager.activeProvider,
+                developerModeEnabled: developerModeEnabled,
                 onProfiles: {
                     isShowingProfiles.toggle()
                 },
@@ -80,6 +90,11 @@ struct RootView: View {
         .onChange(of: appModel.openChatGPTTabRequestID) { _ in
             selectedTab = .assistant
             isShowingProfiles = false
+        }
+        .onChange(of: developerModeEnabled) { isEnabled in
+            if !isEnabled && selectedTab == .developer {
+                selectedTab = .assistant
+            }
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(updateChecker: updateChecker)
@@ -115,11 +130,13 @@ struct RootView: View {
 private enum AppTab: Hashable {
     case assistant
     case memory
+    case developer
 }
 
 private struct CompactBottomSwitcher: View {
     @Binding var selectedTab: AppTab
     let provider: AIProvider
+    let developerModeEnabled: Bool
     let onProfiles: () -> Void
     let onSettings: () -> Void
 
@@ -139,6 +156,16 @@ private struct CompactBottomSwitcher: View {
                 isSelected: selectedTab == .memory
             ) {
                 selectedTab = .memory
+            }
+
+            if developerModeEnabled {
+                CompactTabButton(
+                    title: "Dev",
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    isSelected: selectedTab == .developer
+                ) {
+                    selectedTab = .developer
+                }
             }
 
             Button(action: onProfiles) {
@@ -326,6 +353,7 @@ private struct SettingsView: View {
     @EnvironmentObject private var providerManager: AIProviderManager
     @EnvironmentObject private var launchSettings: MemoryLaunchSettings
     @EnvironmentObject private var chatPerformanceSettings: ChatPerformanceSettings
+    @AppStorage("developerModeEnabled") private var developerModeEnabled = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -345,6 +373,15 @@ private struct SettingsView: View {
 
                 Section {
                     Toggle("Optimize Long Chats", isOn: $chatPerformanceSettings.isEnabled)
+                        .disabled(chatPerformanceSettings.latestExchangeOnly)
+
+                    Toggle(isOn: $chatPerformanceSettings.latestExchangeOnly) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "bolt.fill")
+                                .frame(width: 22)
+                            Text("Latest Exchange Only")
+                        }
+                    }
 
                     Stepper(
                         value: $chatPerformanceSettings.visibleMessageLimit,
@@ -358,7 +395,7 @@ private struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    .disabled(!chatPerformanceSettings.isEnabled)
+                    .disabled(!chatPerformanceSettings.isEnabled || chatPerformanceSettings.latestExchangeOnly)
 
                     Text("Optimize On")
                         .font(.caption)
@@ -394,7 +431,7 @@ private struct SettingsView: View {
                 } header: {
                     Text("Chat Performance")
                 } footer: {
-                    Text("Long-chat optimization hides older loaded messages without removing them from Save Context. ChatGPT Mobile Fallback adds mweb_fallback=1 to ChatGPT conversation URLs only when the parameter is missing.")
+                    Text("Latest Exchange Only overrides the normal message window and keeps only your newest question plus the current AI response visible. Older loaded messages remain available to Save Context. Long-chat optimization otherwise hides older loaded messages without removing them. ChatGPT Mobile Fallback adds mweb_fallback=1 to ChatGPT conversation URLs only when the parameter is missing.")
                 }
 
                 Section("Memory Sharing") {
@@ -403,6 +440,16 @@ private struct SettingsView: View {
                             Text(format.displayName).tag(format)
                         }
                     }
+                }
+
+                Section {
+                    Toggle(isOn: $developerModeEnabled) {
+                        Label("Developer Mode", systemImage: "hammer.fill")
+                    }
+                } header: {
+                    Text("Developer")
+                } footer: {
+                    Text("Adds a Dev tab with an on-demand Sources inspector. No source indexing runs while Developer Mode is off. Once indexed, loaded source text stays available across tabs and is cleared only when ContextPort closes.")
                 }
 
                 Section("Updates") {

@@ -242,9 +242,13 @@ struct AIChatTabView: View {
 
         if let composerText = payload.composerText, !composerText.isEmpty {
             pendingPasteContextText = composerText
-            pendingAttachFileURLs = []
+            pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextID = UUID()
-            appModel.statusMessage = "Saved Markdown is ready for \(provider.displayName). Tap Paste Context to insert it, or continue without it."
+            if payload.fileURLs.isEmpty {
+                appModel.statusMessage = "Saved Markdown is ready for \(provider.displayName). Tap Paste Context to insert it, or continue without it."
+            } else {
+                appModel.statusMessage = "Saved Markdown and \(payload.fileURLs.count) Memory attachment\(payload.fileURLs.count == 1 ? "" : "s") are ready for \(provider.displayName). Tap Paste Context first, then Attach Files."
+            }
             watchForConversationStartWithoutPaste(pendingPasteContextID)
         } else if !payload.fileURLs.isEmpty {
             pendingAttachFileURLs = payload.fileURLs
@@ -263,7 +267,11 @@ struct AIChatTabView: View {
             if inserted {
                 pendingPasteContextText = nil
                 pendingPasteContextID = UUID()
-                appModel.statusMessage = "Pasted saved context into \(provider.displayName). Review and send."
+                if pendingAttachFileURLs.isEmpty {
+                    appModel.statusMessage = "Pasted saved context into \(provider.displayName). Review and send."
+                } else {
+                    appModel.statusMessage = "Pasted saved context into \(provider.displayName). Tap Attach Files to add the remaining Memory attachment\(pendingAttachFileURLs.count == 1 ? "" : "s")."
+                }
             } else {
                 appModel.statusMessage = "Could not paste yet. Wait for \(provider.displayName) to finish loading, then tap Paste Context again."
             }
@@ -316,7 +324,11 @@ struct AIChatTabView: View {
                 if currentUserMessages > baselineUserMessages {
                     pendingPasteContextText = nil
                     pendingPasteContextID = UUID()
-                    appModel.statusMessage = "Continuing without pasted Memory context. Save Context is available again."
+                    if pendingAttachFileURLs.isEmpty {
+                        appModel.statusMessage = "Continuing without pasted Memory context. Save Context is available again."
+                    } else {
+                        appModel.statusMessage = "Continuing without pasted Memory text. Tap Attach Files to add the remaining Memory attachment\(pendingAttachFileURLs.count == 1 ? "" : "s")."
+                    }
                     return
                 }
             }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum MemorySharingFormat: String, CaseIterable, Hashable, Identifiable {
+enum MemorySharingFormat: String, CaseIterable, Hashable, Identifiable, Sendable {
     case askEveryTime = "ask_every_time"
     case pdfAndMarkdown = "pdf_and_markdown"
     case pdfOnly = "pdf_only"
@@ -89,9 +89,13 @@ struct MemoryLaunchSheet: View {
                                     .frame(width: 24)
                                 Text(provider.displayName)
                                 Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(.secondary)
+                                if isPreparing, pendingProvider?.id == provider.id {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.secondary)
+                                }
                             }
                             .contentShape(Rectangle())
                         }
@@ -119,6 +123,7 @@ struct MemoryLaunchSheet: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .disabled(isPreparing)
                 }
             }
             .confirmationDialog(
@@ -132,17 +137,19 @@ struct MemoryLaunchSheet: View {
                         launch(provider: provider, format: format)
                     }
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("Cancel", role: .cancel) {
+                    pendingProvider = nil
+                }
             } message: {
-                Text("Selected memories are first combined into one ContextPort context bundle. PDF and Markdown are two formats of the same combined context.")
+                Text("Selected memories are first combined into one ContextPort context bundle. PDF and Markdown are two formats of the same combined context. Saved Memory attachments travel with the launch as separate files.")
             }
         }
     }
 
     private func chooseProvider(_ provider: AIProvider) {
         launchError = nil
+        pendingProvider = provider
         if launchSettings.sharingFormat == .askEveryTime {
-            pendingProvider = provider
             showFormatSelection = true
         } else {
             launch(provider: provider, format: launchSettings.sharingFormat)
@@ -152,23 +159,63 @@ struct MemoryLaunchSheet: View {
     private func launch(provider: AIProvider, format: MemorySharingFormat) {
         guard !isPreparing else { return }
         isPreparing = true
-        defer { isPreparing = false }
+        launchError = nil
+        pendingProvider = provider
+        appModel.statusMessage = "Preparing \(entries.count) Memory \(entries.count == 1 ? "entry" : "entries") for \(provider.displayName)..."
 
-        do {
-            let bundle = try MemoryContextBundleBuilder().build(entries: entries, format: format)
-            PendingLocalMemoryAttachment.mark(
-                entries,
-                fileURLs: bundle.fileURLs,
-                injectMarkdown: format.injectsMarkdownText
-            )
+        let selectedEntries = entries
+        Task { @MainActor in
+            defer { isPreparing = false }
+            do {
+                let bundle = try await Task.detached(priority: .userInitiated) {
+                    try MemoryContextBundleBuilder().build(entries: selectedEntries, format: format)
+                }.value
 
-            providerManager.selectProvider(provider)
-            appModel.statusMessage = bundle.statusMessage(for: provider.displayName)
-            appModel.openChatGPTTabRequestID = UUID()
-            onLaunched()
-            dismiss()
-        } catch {
-            launchError = "Could not prepare Memory context: \(error.localizedDescription)"
+                let supplementalAttachmentURLs = selectedEntries.compactMap {
+                    DeveloperSourceMemoryArchiveBuilder.existingArchiveURL(for: $0)
+                }
+                var seenPaths = Set<String>()
+                let handoffFileURLs = (bundle.fileURLs + supplementalAttachmentURLs).filter { url in
+                    seenPaths.insert(url.standardizedFileURL.path).inserted
+                }
+
+                PendingLocalMemoryAttachment.mark(
+                    selectedEntries,
+                    fileURLs: handoffFileURLs,
+                    composerTextURL: bundle.composerTextURL
+                )
+
+                providerManager.selectProvider(provider)
+                appModel.statusMessage = launchStatusMessage(
+                    bundle: bundle,
+                    handoffFileURLs: handoffFileURLs,
+                    supplementalAttachmentCount: supplementalAttachmentURLs.count,
+                    providerName: provider.displayName
+                )
+                appModel.openChatGPTTabRequestID = UUID()
+                onLaunched()
+                dismiss()
+            } catch {
+                launchError = "Could not prepare Memory context: \(error.localizedDescription)"
+                appModel.statusMessage = launchError ?? "Could not prepare Memory context."
+            }
         }
+    }
+
+    private func launchStatusMessage(
+        bundle: MemoryContextBundle,
+        handoffFileURLs: [URL],
+        supplementalAttachmentCount: Int,
+        providerName: String
+    ) -> String {
+        if bundle.format.injectsMarkdownText {
+            if supplementalAttachmentCount > 0 {
+                return "Memory context and \(supplementalAttachmentCount) saved attachment\(supplementalAttachmentCount == 1 ? "" : "s") are ready for \(providerName). Tap Paste Context, then Attach Files."
+            }
+            return bundle.statusMessage(for: providerName)
+        }
+
+        let names = handoffFileURLs.map(\.lastPathComponent).joined(separator: ", ")
+        return "\(bundle.selectedCount) Memory \(bundle.selectedCount == 1 ? "entry is" : "entries are") ready for \(providerName): \(names)."
     }
 }

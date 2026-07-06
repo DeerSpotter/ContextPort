@@ -1,5 +1,4 @@
 import Foundation
-import PDFKit
 
 enum MemoryContextBundleError: LocalizedError {
     case emptySelection
@@ -15,8 +14,9 @@ enum MemoryContextBundleError: LocalizedError {
     }
 }
 
-struct MemoryContextBundle {
+struct MemoryContextBundle: Sendable {
     let fileURLs: [URL]
+    let composerTextURL: URL?
     let selectedCount: Int
     let format: MemorySharingFormat
 
@@ -32,15 +32,16 @@ struct MemoryContextBundle {
 }
 
 final class MemoryContextBundleBuilder {
+    private static let streamChunkSize = 1_048_576
+
     private let fileManager: FileManager
     private let store: LocalMemoryStore
-    private let bundleRoot: URL
+    private let cache: MemoryContextBundleCache
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
         self.store = LocalMemoryStore(fileManager: fileManager)
-        self.bundleRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ContextPortContextBundles", isDirectory: true)
+        self.cache = MemoryContextBundleCache(fileManager: fileManager)
     }
 
     func build(entries: [LocalMemoryEntry], format: MemorySharingFormat) throws -> MemoryContextBundle {
@@ -48,158 +49,193 @@ final class MemoryContextBundleBuilder {
             throw MemoryContextBundleError.emptySelection
         }
 
-        try resetBundleRoot()
-        let outputFolder = bundleRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try fileManager.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        let outputFolder = try cache.bundleFolder(for: entries)
+        let markdownURL = outputFolder.appendingPathComponent("ContextPort Context.md")
+        let pdfURL = outputFolder.appendingPathComponent("ContextPort Context.pdf")
+        let composerTextURL = outputFolder.appendingPathComponent("ContextPort Composer Context.txt")
 
-        let markdownText = Self.combinedMarkdown(for: entries, store: store)
-        var fileURLs: [URL] = []
-
-        if format.includesPDF {
-            let pdfURL = outputFolder.appendingPathComponent("ContextPort Context.pdf")
-            try buildCombinedPDF(entries: entries, combinedMarkdown: markdownText, to: pdfURL)
-            fileURLs.append(pdfURL)
+        if format.includesMarkdownFile || format.injectsMarkdownText {
+            try buildCombinedMarkdownIfNeeded(entries: entries, to: markdownURL)
         }
 
+        var fileURLs: [URL] = []
+        if format.includesPDF {
+            try buildCombinedPDFIfNeeded(entries: entries, markdownURL: markdownURL, to: pdfURL)
+            fileURLs.append(pdfURL)
+        }
         if format.includesMarkdownFile {
-            let markdownURL = outputFolder.appendingPathComponent("ContextPort Context.md")
-            try markdownText.write(to: markdownURL, atomically: true, encoding: .utf8)
             fileURLs.append(markdownURL)
         }
 
+        var pendingComposerTextURL: URL?
+        if format.injectsMarkdownText {
+            try buildComposerTextIfNeeded(markdownURL: markdownURL, to: composerTextURL)
+            pendingComposerTextURL = composerTextURL
+        }
+
+        cache.markUsed(outputFolder)
+        cache.prune(keeping: outputFolder)
+
         return MemoryContextBundle(
             fileURLs: fileURLs,
+            composerTextURL: pendingComposerTextURL,
             selectedCount: entries.count,
             format: format
         )
     }
 
     static func composerText(for entries: [LocalMemoryEntry]) -> String {
-        let store = LocalMemoryStore()
-        let markdown = combinedMarkdown(for: entries, store: store)
-        return """
-        Continue using the selected ContextPort memories below as project memory. Treat them as historical context. Current instructions override older context.
-
-        \(markdown)
-        """
+        do {
+            let bundle = try MemoryContextBundleBuilder().build(entries: entries, format: .insertMarkdownText)
+            guard let url = bundle.composerTextURL else { return "" }
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            return ""
+        }
     }
 
-    private static func combinedMarkdown(for entries: [LocalMemoryEntry], store: LocalMemoryStore) -> String {
-        let formatter = ISO8601DateFormatter()
-        let sections = entries.enumerated().map { index, entry in
-            let revisionSections = entry.orderedRevisions.map { revision in
-                let markdown = store.markdownText(for: revision, in: entry)
-                    ?? "_Revision content is unavailable on this device._"
-                let messageLine = revision.messageCount.map { "Messages: \($0)" } ?? "Messages: unknown"
-                return """
-                ## Revision \(revision.number)
+    private func buildCombinedMarkdownIfNeeded(entries: [LocalMemoryEntry], to destination: URL) throws {
+        guard !cache.isUsableFile(destination) else { return }
 
-                Source: \(revision.source)
-                Saved: \(formatter.string(from: revision.createdAt))
-                \(messageLine)
+        let temporaryURL = destination.deletingLastPathComponent()
+            .appendingPathComponent(".markdown-\(UUID().uuidString).tmp")
+        fileManager.createFile(atPath: temporaryURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: temporaryURL)
 
-                \(markdown)
-                """
+        do {
+            let formatter = ISO8601DateFormatter()
+            write(
+                "# ContextPort Context Bundle\n\n" +
+                "Selected Memories: \(entries.count)\n" +
+                "Generated: \(formatter.string(from: Date()))\n\n" +
+                "Current instructions override older context. Treat the selected memories and their ordered revisions as historical project context unless the user explicitly says otherwise.\n\n" +
+                "---\n\n",
+                to: output
+            )
+
+            for (entryIndex, entry) in entries.enumerated() {
+                if entryIndex > 0 {
+                    write("\n\n---\n\n", to: output)
+                }
+                write(
+                    "# Memory \(entryIndex + 1): \(entry.title)\n\n" +
+                    "Project: \(entry.projectName)\n" +
+                    "Created: \(formatter.string(from: entry.createdAt))\n" +
+                    "Updated: \(formatter.string(from: entry.updatedAt))\n" +
+                    "Revisions: \(entry.revisionCount)\n\n",
+                    to: output
+                )
+
+                for (revisionIndex, revision) in entry.orderedRevisions.enumerated() {
+                    if revisionIndex > 0 {
+                        write("\n\n---\n\n", to: output)
+                    }
+                    let messageLine = revision.messageCount.map { "Messages: \($0)" } ?? "Messages: unknown"
+                    write(
+                        "## Revision \(revision.number)\n\n" +
+                        "Source: \(revision.source)\n" +
+                        "Saved: \(formatter.string(from: revision.createdAt))\n" +
+                        "\(messageLine)\n\n",
+                        to: output
+                    )
+                    try streamMarkdown(for: revision, in: entry, to: output)
+                }
             }
 
-            return """
-            # Memory \(index + 1): \(entry.title)
-
-            Project: \(entry.projectName)
-            Created: \(formatter.string(from: entry.createdAt))
-            Updated: \(formatter.string(from: entry.updatedAt))
-            Revisions: \(entry.revisionCount)
-
-            \(revisionSections.joined(separator: "\n\n---\n\n"))
-            """
+            output.synchronizeFile()
+            output.closeFile()
+            try replace(destination, with: temporaryURL)
+        } catch {
+            output.closeFile()
+            try? fileManager.removeItem(at: temporaryURL)
+            throw error
         }
-
-        return """
-        # ContextPort Context Bundle
-
-        Selected Memories: \(entries.count)
-        Generated: \(formatter.string(from: Date()))
-
-        Current instructions override older context. Treat the selected memories and their ordered revisions as historical project context unless the user explicitly says otherwise.
-
-        ---
-
-        \(sections.joined(separator: "\n\n---\n\n"))
-        """
     }
 
-    private func buildCombinedPDF(
+    private func buildComposerTextIfNeeded(markdownURL: URL, to destination: URL) throws {
+        guard !cache.isUsableFile(destination) else { return }
+
+        let temporaryURL = destination.deletingLastPathComponent()
+            .appendingPathComponent(".composer-\(UUID().uuidString).tmp")
+        fileManager.createFile(atPath: temporaryURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: temporaryURL)
+
+        do {
+            write(
+                "Continue using the selected ContextPort memories below as project memory. Treat them as historical context. Current instructions override older context.\n\n",
+                to: output
+            )
+            try streamFile(at: markdownURL, to: output)
+            output.synchronizeFile()
+            output.closeFile()
+            try replace(destination, with: temporaryURL)
+        } catch {
+            output.closeFile()
+            try? fileManager.removeItem(at: temporaryURL)
+            throw error
+        }
+    }
+
+    private func buildCombinedPDFIfNeeded(
         entries: [LocalMemoryEntry],
-        combinedMarkdown: String,
+        markdownURL: URL,
         to destination: URL
     ) throws {
-        let output = PDFDocument()
+        guard !cache.isUsableFile(destination) else { return }
 
-        for entry in entries {
-            for revision in entry.orderedRevisions {
-                if let sourceURL = store.pdfURL(for: revision),
-                   let sourceDocument = PDFDocument(url: sourceURL) {
-                    appendPages(from: sourceDocument, to: output)
-                    continue
-                }
-
-                guard let markdown = store.markdownText(for: revision, in: entry) else {
-                    continue
-                }
-
-                let fallbackURL = bundleRoot.appendingPathComponent("fallback-\(revision.id.uuidString).pdf")
-                let fallbackEntry = LocalMemoryEntry(
-                    projectName: entry.projectName,
-                    title: "\(entry.title) · Revision \(revision.number)",
-                    content: markdown,
-                    source: revision.source,
-                    tags: entry.tags,
-                    importance: entry.importance,
-                    createdAt: revision.createdAt,
-                    updatedAt: revision.createdAt,
-                    messageCount: revision.messageCount,
-                    exportedAt: revision.exportedAt
-                )
-                try LocalMemoryPDFRenderer.render(entry: fallbackEntry, to: fallbackURL)
-                if let fallbackDocument = PDFDocument(url: fallbackURL) {
-                    appendPages(from: fallbackDocument, to: output)
-                }
-                try? fileManager.removeItem(at: fallbackURL)
-            }
-        }
-
-        if output.pageCount == 0 {
-            let fallbackEntry = LocalMemoryEntry(
-                projectName: "ContextPort",
-                title: "ContextPort Context Bundle",
-                content: combinedMarkdown,
-                source: "contextport-memory-bundle",
-                tags: ["context", "memory", "bundle"],
-                importance: 5
-            )
-            try LocalMemoryPDFRenderer.render(entry: fallbackEntry, to: destination)
+        if try MemoryContextPDFCompiler(fileManager: fileManager).compile(entries: entries, to: destination) {
             return
         }
 
-        guard output.write(to: destination) else {
-            throw MemoryContextBundleError.couldNotBuildPDF
+        try buildCombinedMarkdownIfNeeded(entries: entries, to: markdownURL)
+        let combinedMarkdown = try String(contentsOf: markdownURL, encoding: .utf8)
+        let fallbackEntry = LocalMemoryEntry(
+            projectName: "ContextPort",
+            title: "ContextPort Context Bundle",
+            content: combinedMarkdown,
+            source: "contextport-memory-bundle",
+            tags: ["context", "memory", "bundle"],
+            importance: 5
+        )
+        try LocalMemoryPDFRenderer.render(entry: fallbackEntry, to: destination)
+    }
+
+    private func streamMarkdown(
+        for revision: LocalMemoryRevision,
+        in entry: LocalMemoryEntry,
+        to output: FileHandle
+    ) throws {
+        if let sourceURL = store.markdownURL(for: revision) {
+            try streamFile(at: sourceURL, to: output)
+            return
+        }
+        if revision.number == entry.latestRevision?.number, !entry.content.isEmpty {
+            write(entry.content, to: output)
+            return
+        }
+        write("_Revision content is unavailable on this device._", to: output)
+    }
+
+    private func streamFile(at sourceURL: URL, to output: FileHandle) throws {
+        let input = try FileHandle(forReadingFrom: sourceURL)
+        defer { input.closeFile() }
+
+        while true {
+            let data = input.readData(ofLength: Self.streamChunkSize)
+            if data.isEmpty { break }
+            output.write(data)
         }
     }
 
-    private func appendPages(from source: PDFDocument, to output: PDFDocument) {
-        for index in 0..<source.pageCount {
-            guard let page = source.page(at: index),
-                  let pageCopy = page.copy() as? PDFPage else {
-                continue
-            }
-            output.insert(pageCopy, at: output.pageCount)
-        }
+    private func write(_ text: String, to output: FileHandle) {
+        guard let data = text.data(using: .utf8) else { return }
+        output.write(data)
     }
 
-    private func resetBundleRoot() throws {
-        if fileManager.fileExists(atPath: bundleRoot.path) {
-            try fileManager.removeItem(at: bundleRoot)
+    private func replace(_ destination: URL, with temporaryURL: URL) throws {
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
         }
-        try fileManager.createDirectory(at: bundleRoot, withIntermediateDirectories: true)
+        try fileManager.moveItem(at: temporaryURL, to: destination)
     }
 }
