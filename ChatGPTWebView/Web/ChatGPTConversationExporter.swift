@@ -311,23 +311,51 @@ final class ChatConversationExporter {
           };
           const extractClaude = () => {
             const turns = [], seen = new Set();
-            const list = document.querySelector('[data-testid="virtual-message-list"]');
-            if (!list) return turns;
-            all(list, '[data-index]').forEach(row => {
+            const assistantHeadingSelector = 'h1[data-find-omitted],h2[data-find-omitted],h3[data-find-omitted]';
+            const assistantBodySelector = '.font-claude-response-body,.progressive-markdown,.standard-markdown';
+            const rows = topLevel(all(document, '[data-test-render-count]'));
+
+            rows.forEach(row => {
               const user = row.querySelector('[data-testid="user-message"]');
               if (user) {
                 pushTurn(turns, seen, 'user', serialize(user));
                 return;
               }
-              const responseBlocks = topLevel(all(row, '.standard-markdown,.progressive-markdown,.font-claude-response-body'));
-              const responseHeading = all(row, 'h1,h2,h3').some(heading => /^Claude responded:/i.test(text(heading)));
-              if (responseBlocks.length > 0 || responseHeading) {
+
+              const responseHeading = all(row, assistantHeadingSelector).some(heading => /^Claude responded:/i.test(text(heading)));
+              const responseBlocks = topLevel(all(row, assistantBodySelector)).filter(block => !block.closest('[data-testid="user-message"]'));
+              if (responseHeading || responseBlocks.length > 0) {
                 const content = responseBlocks.length > 0
                   ? responseBlocks.map(serialize).filter(Boolean).join('\n\n')
                   : serialize(row);
                 pushTurn(turns, seen, 'assistant', content);
               }
             });
+
+            if (turns.length > 0) return turns;
+
+            const candidates = [];
+            topLevel(all(document, '[data-testid="user-message"]')).forEach(node => {
+              candidates.push({ node, role: 'user', content: serialize(node) });
+            });
+            all(document, assistantHeadingSelector)
+              .filter(heading => /^Claude responded:/i.test(text(heading)))
+              .forEach(heading => {
+                const root = heading.parentElement || heading;
+                const responseBlocks = topLevel(all(root, assistantBodySelector));
+                candidates.push({
+                  node: root,
+                  role: 'assistant',
+                  content: responseBlocks.length > 0
+                    ? responseBlocks.map(serialize).filter(Boolean).join('\n\n')
+                    : serialize(root)
+                });
+              });
+            candidates.sort((left, right) => {
+              if (left.node === right.node) return 0;
+              return left.node.compareDocumentPosition(right.node) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+            });
+            candidates.forEach(candidate => pushTurn(turns, seen, candidate.role, candidate.content));
             return turns;
           };
           const extractGrok = () => {
