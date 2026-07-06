@@ -297,13 +297,14 @@ struct AIChatTabView: View {
             defer { isAttachingFiles = false }
             let memoryAttachWorked = await webViewStore.injectFilesIntoChatGPTUpload(urls)
 
-            pendingAttachFileURLs = []
-            webViewStore.preparePendingUploadURLs([])
-
             if memoryAttachWorked {
+                pendingAttachFileURLs = []
+                webViewStore.preparePendingUploadURLs([])
                 appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
             } else {
-                appModel.statusMessage = "Context bundle attach was attempted in \(provider.displayName). Save Context is available again. Return to Memory to retry the bundle if needed."
+                pendingAttachFileURLs = urls
+                webViewStore.preparePendingUploadURLs(urls)
+                appModel.statusMessage = "Context bundle could not be attached in \(provider.displayName). The files are still ready; tap Attach Files to retry."
             }
         }
     }

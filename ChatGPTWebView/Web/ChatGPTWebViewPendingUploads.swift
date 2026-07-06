@@ -445,7 +445,7 @@ extension ChatGPTWebViewStore {
               .map((el) => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('data-testid')].filter(Boolean).join(' '))
               .join(' ')
               .toLowerCase();
-            return bridge.files.some((record) => attachmentHints.includes(record.name.toLowerCase()));
+            return bridge.files.every((record) => attachmentHints.includes(record.name.toLowerCase()));
           };
 
           const composer = findComposer();
