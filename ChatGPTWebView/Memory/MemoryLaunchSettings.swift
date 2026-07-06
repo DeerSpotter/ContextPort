@@ -80,7 +80,7 @@ struct MemoryLaunchSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Choose AI") {
+                Section("Share With") {
                     ForEach(providerManager.providers) { provider in
                         Button {
                             chooseProvider(provider)
@@ -110,7 +110,7 @@ struct MemoryLaunchSheet: View {
                         HStack(spacing: 12) {
                             Image(systemName: "paperclip")
                                 .frame(width: 24)
-                            Text("None")
+                            Text("Current Conversation")
                             Spacer()
                             if isPreparing, isCurrentConversationDestination {
                                 ProgressView()
@@ -139,7 +139,7 @@ struct MemoryLaunchSheet: View {
                     }
                 }
             }
-            .navigationTitle("Start New Chat")
+            .navigationTitle("Share Context")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
