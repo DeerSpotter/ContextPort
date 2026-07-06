@@ -241,37 +241,126 @@ extension ChatGPTWebViewStore {
     }
 
     func injectFilesIntoChatGPTUpload(_ urls: [URL]) async -> Bool {
-        struct FileRecord: Encodable {
+        struct FileDescriptor {
+            let id: String
             let name: String
             let mime: String
-            let base64: String
         }
 
-        let maxTotalBytes = 18_000_000
-        var totalBytes = 0
-        var records: [FileRecord] = []
+        let uploadChunkSize = 384 * 1024
+        let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !existingURLs.isEmpty else { return false }
 
-        for url in urls {
-            guard FileManager.default.fileExists(atPath: url.path),
-                  let data = try? Data(contentsOf: url) else { continue }
-            totalBytes += data.count
-            guard totalBytes <= maxTotalBytes else { return false }
-
-            let ext = url.pathExtension
-            let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
-            records.append(FileRecord(name: url.lastPathComponent, mime: mime, base64: data.base64EncodedString()))
+        func evaluateBool(_ script: String) async -> Bool {
+            let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+                webView.evaluateJavaScript(script) { value, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: value)
+                    }
+                }
+            }
+            return (value as? Bool) == true
         }
 
-        guard !records.isEmpty,
-              let jsonData = try? JSONEncoder().encode(records),
-              let json = String(data: jsonData, encoding: .utf8) else {
-            return false
+        func jsonObject(_ object: [String: String]) -> String? {
+            guard JSONSerialization.isValidJSONObject(object),
+                  let data = try? JSONSerialization.data(withJSONObject: object, options: []),
+                  let json = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return json
         }
 
-        let script = """
+        func cleanupUploadBridge() async {
+            _ = await evaluateBool(
+                "(() => { try { delete window.__contextPortUploadBridge; } catch (_) {} return true; })();"
+            )
+        }
+
+        let initialized = await evaluateBool(#"""
+        (() => {
+          try { delete window.__contextPortUploadBridge; } catch (_) {}
+          window.__contextPortUploadBridge = { files: [] };
+          return true;
+        })();
+        """#)
+        guard initialized else { return false }
+
+        for url in existingURLs {
+            let descriptor = FileDescriptor(
+                id: UUID().uuidString,
+                name: url.lastPathComponent,
+                mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            )
+
+            guard let descriptorJSON = jsonObject([
+                "id": descriptor.id,
+                "name": descriptor.name,
+                "mime": descriptor.mime
+            ]) else {
+                await cleanupUploadBridge()
+                return false
+            }
+
+            let registered = await evaluateBool("""
+            (() => {
+              const bridge = window.__contextPortUploadBridge;
+              if (!bridge || !Array.isArray(bridge.files)) return false;
+              const descriptor = \(descriptorJSON);
+              bridge.files.push({ ...descriptor, parts: [] });
+              return true;
+            })();
+            """)
+            guard registered else {
+                await cleanupUploadBridge()
+                return false
+            }
+
+            guard let handle = try? FileHandle(forReadingFrom: url) else {
+                await cleanupUploadBridge()
+                return false
+            }
+
+            var fileReadSucceeded = true
+            do {
+                while let chunk = try handle.read(upToCount: uploadChunkSize), !chunk.isEmpty {
+                    let base64 = chunk.base64EncodedString()
+                    let staged = await evaluateBool("""
+                    (() => {
+                      const bridge = window.__contextPortUploadBridge;
+                      const file = bridge?.files?.find((candidate) => candidate.id === '\(descriptor.id)');
+                      if (!file) return false;
+                      const binary = atob('\(base64)');
+                      const bytes = new Uint8Array(binary.length);
+                      for (let index = 0; index < binary.length; index++) {
+                        bytes[index] = binary.charCodeAt(index);
+                      }
+                      file.parts.push(bytes);
+                      return true;
+                    })();
+                    """)
+                    if !staged {
+                        fileReadSucceeded = false
+                        break
+                    }
+                }
+            } catch {
+                fileReadSucceeded = false
+            }
+            try? handle.close()
+
+            guard fileReadSucceeded else {
+                await cleanupUploadBridge()
+                return false
+            }
+        }
+
+        let attachScript = #"""
         (async () => {
-          const records = \(json);
-          if (!records.length) return false;
+          const bridge = window.__contextPortUploadBridge;
+          if (!bridge || !Array.isArray(bridge.files) || bridge.files.length === 0) return false;
 
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -301,6 +390,23 @@ extension ChatGPTWebViewStore {
             return true;
           };
 
+          const findComposer = () => {
+            const selectors = [
+              'textarea',
+              '[contenteditable="true"]',
+              '.ProseMirror',
+              '[data-testid="composer"] [contenteditable="true"]',
+              '[data-testid="composer"] textarea',
+              'form textarea',
+              'form [contenteditable="true"]'
+            ];
+            for (const selector of selectors) {
+              const candidates = Array.from(document.querySelectorAll(selector)).filter(visible);
+              if (candidates.length) return candidates[candidates.length - 1];
+            }
+            return null;
+          };
+
           const closeTransientMenus = () => {
             const escDown = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
             const escUp = new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
@@ -319,47 +425,28 @@ extension ChatGPTWebViewStore {
             }
           };
 
-          const findComposer = () => {
-            const selectors = [
-              'textarea',
-              '[contenteditable="true"]',
-              '.ProseMirror',
-              '[data-testid="composer"] [contenteditable="true"]',
-              '[data-testid="composer"] textarea',
-              'form textarea',
-              'form [contenteditable="true"]'
-            ];
-            for (const selector of selectors) {
-              const candidates = Array.from(document.querySelectorAll(selector)).filter(visible);
-              if (candidates.length) return candidates[candidates.length - 1];
-            }
-            return null;
-          };
+          const files = bridge.files.map((record) => new File(
+            record.parts,
+            record.name,
+            { type: record.mime || 'application/octet-stream' }
+          ));
 
-          const makeFiles = () => {
-            const files = records.map((record) => {
-              const binary = atob(record.base64);
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-              return new File([bytes], record.name, { type: record.mime || 'application/octet-stream' });
-            });
-            return files;
-          };
+          let transfer = null;
+          try { transfer = new DataTransfer(); } catch (_) {}
+          if (!transfer) {
+            try { transfer = new ClipboardEvent('paste').clipboardData; } catch (_) {}
+          }
+          if (!transfer) return false;
+          for (const file of files) transfer.items.add(file);
+          if (!transfer.files || transfer.files.length === 0) return false;
 
-          const makeTransfer = (files) => {
-            let transfer = null;
-            try { transfer = new DataTransfer(); } catch (_) {}
-            if (!transfer) {
-              try { transfer = new ClipboardEvent('paste').clipboardData; } catch (_) {}
-            }
-            if (!transfer) return null;
-            for (const file of files) transfer.items.add(file);
-            return transfer;
+          const attachmentVisible = () => {
+            const attachmentHints = Array.from(document.querySelectorAll('[data-testid], [aria-label], a, button, div, span'))
+              .map((el) => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('data-testid')].filter(Boolean).join(' '))
+              .join(' ')
+              .toLowerCase();
+            return bridge.files.some((record) => attachmentHints.includes(record.name.toLowerCase()));
           };
-
-          const files = makeFiles();
-          const transfer = makeTransfer(files);
-          if (!transfer || !transfer.files || transfer.files.length === 0) return false;
 
           const composer = findComposer();
           if (composer) tapLikeUser(composer);
@@ -371,10 +458,13 @@ extension ChatGPTWebViewStore {
               input.files = transfer.files;
               input.dispatchEvent(new Event('input', { bubbles: true }));
               input.dispatchEvent(new Event('change', { bubbles: true }));
-              if (input.files && input.files.length > 0) {
-                closeTransientMenus();
+              for (let attempt = 0; attempt < 12; attempt++) {
                 await wait(250);
-                return true;
+                if (attachmentVisible()) {
+                  closeTransientMenus();
+                  await wait(250);
+                  return true;
+                }
               }
             } catch (_) {}
           }
@@ -392,40 +482,28 @@ extension ChatGPTWebViewStore {
               target.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
             } catch (_) {}
             try {
-              target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
-            } catch (_) {}
-            try {
               target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: transfer }));
               target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
               target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
             } catch (_) {}
-          }
 
-          await wait(600);
-          const attachmentHints = Array.from(document.querySelectorAll('[data-testid], [aria-label], a, button, div, span'))
-            .map((el) => [el.innerText, el.textContent, el.getAttribute('aria-label'), el.getAttribute('data-testid')].filter(Boolean).join(' '))
-            .join(' ')
-            .toLowerCase();
-          const success = records.some((record) => attachmentHints.includes(record.name.toLowerCase())) || false;
-          if (success) {
-            closeTransientMenus();
-            await wait(250);
-          }
-          return success;
-        })();
-        """
-
-        let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
-            webView.evaluateJavaScript(script) { value, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: value)
-                }
+            for (let attempt = 0; attempt < 8; attempt++) {
+              await wait(250);
+              if (attachmentVisible()) {
+                closeTransientMenus();
+                await wait(250);
+                return true;
+              }
             }
-        }
+          }
 
-        return (value as? Bool) == true
+          return false;
+        })();
+        """#
+
+        let attached = await evaluateBool(attachScript)
+        await cleanupUploadBridge()
+        return attached
     }
 
     private func waitForStableComposerReady() async -> Bool {
