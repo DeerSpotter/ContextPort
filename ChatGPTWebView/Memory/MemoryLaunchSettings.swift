@@ -72,6 +72,7 @@ struct MemoryLaunchSheet: View {
     var onLaunched: () -> Void = {}
 
     @State private var pendingProvider: AIProvider?
+    @State private var isCurrentConversationDestination = false
     @State private var showFormatSelection = false
     @State private var isPreparing = false
     @State private var launchError: String?
@@ -102,6 +103,28 @@ struct MemoryLaunchSheet: View {
                         .buttonStyle(.plain)
                         .disabled(isPreparing)
                     }
+
+                    Button {
+                        chooseCurrentConversation()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "paperclip")
+                                .frame(width: 24)
+                            Text("None")
+                            Spacer()
+                            if isPreparing, isCurrentConversationDestination {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isPreparing)
+                    .accessibilityHint("Attach the selected Memory to the current AI conversation without starting a new chat")
                 }
 
                 Section {
@@ -133,12 +156,16 @@ struct MemoryLaunchSheet: View {
             ) {
                 ForEach(MemorySharingFormat.launchFormats) { format in
                     Button(format.displayName) {
-                        guard let provider = pendingProvider else { return }
-                        launch(provider: provider, format: format)
+                        if isCurrentConversationDestination {
+                            attachToCurrentConversation(format: format)
+                        } else if let provider = pendingProvider {
+                            launch(provider: provider, format: format)
+                        }
                     }
                 }
                 Button("Cancel", role: .cancel) {
                     pendingProvider = nil
+                    isCurrentConversationDestination = false
                 }
             } message: {
                 Text("Selected memories are first combined into one ContextPort context bundle. PDF and Markdown are two formats of the same combined context. Saved Memory attachments travel with the launch as separate files.")
@@ -149,6 +176,7 @@ struct MemoryLaunchSheet: View {
     private func chooseProvider(_ provider: AIProvider) {
         launchError = nil
         pendingProvider = provider
+        isCurrentConversationDestination = false
         if launchSettings.sharingFormat == .askEveryTime {
             showFormatSelection = true
         } else {
@@ -156,12 +184,50 @@ struct MemoryLaunchSheet: View {
         }
     }
 
+    private func chooseCurrentConversation() {
+        launchError = nil
+        pendingProvider = nil
+        isCurrentConversationDestination = true
+        if launchSettings.sharingFormat == .askEveryTime {
+            showFormatSelection = true
+        } else {
+            attachToCurrentConversation(format: launchSettings.sharingFormat)
+        }
+    }
+
     private func launch(provider: AIProvider, format: MemorySharingFormat) {
+        prepareHandoff(
+            provider: provider,
+            format: format,
+            handoffMode: .newConversation
+        )
+    }
+
+    private func attachToCurrentConversation(format: MemorySharingFormat) {
+        prepareHandoff(
+            provider: providerManager.activeProvider,
+            format: format,
+            handoffMode: .currentConversation
+        )
+    }
+
+    private func prepareHandoff(
+        provider: AIProvider,
+        format: MemorySharingFormat,
+        handoffMode: MemoryHandoffMode
+    ) {
         guard !isPreparing else { return }
         isPreparing = true
         launchError = nil
-        pendingProvider = provider
-        appModel.statusMessage = "Preparing \(entries.count) Memory \(entries.count == 1 ? "entry" : "entries") for \(provider.displayName)..."
+
+        let isCurrentConversation = handoffMode == .currentConversation
+        isCurrentConversationDestination = isCurrentConversation
+        pendingProvider = isCurrentConversation ? nil : provider
+
+        let destination = isCurrentConversation
+            ? "the current \(provider.displayName) conversation"
+            : provider.displayName
+        appModel.statusMessage = "Preparing \(entries.count) Memory \(entries.count == 1 ? "entry" : "entries") for \(destination)..."
 
         let selectedEntries = entries
         Task { @MainActor in
@@ -182,15 +248,20 @@ struct MemoryLaunchSheet: View {
                 PendingLocalMemoryAttachment.mark(
                     selectedEntries,
                     fileURLs: handoffFileURLs,
-                    composerTextURL: bundle.composerTextURL
+                    composerTextURL: bundle.composerTextURL,
+                    handoffMode: handoffMode
                 )
 
-                providerManager.selectProvider(provider)
+                if handoffMode == .newConversation {
+                    providerManager.selectProvider(provider)
+                }
+
                 appModel.statusMessage = launchStatusMessage(
                     bundle: bundle,
                     handoffFileURLs: handoffFileURLs,
                     supplementalAttachmentCount: supplementalAttachmentURLs.count,
-                    providerName: provider.displayName
+                    providerName: provider.displayName,
+                    isCurrentConversation: isCurrentConversation
                 )
                 appModel.openChatGPTTabRequestID = UUID()
                 onLaunched()
@@ -206,16 +277,24 @@ struct MemoryLaunchSheet: View {
         bundle: MemoryContextBundle,
         handoffFileURLs: [URL],
         supplementalAttachmentCount: Int,
-        providerName: String
+        providerName: String,
+        isCurrentConversation: Bool
     ) -> String {
+        let destination = isCurrentConversation
+            ? "the current \(providerName) conversation"
+            : providerName
+
         if bundle.format.injectsMarkdownText {
             if supplementalAttachmentCount > 0 {
-                return "Memory context and \(supplementalAttachmentCount) saved attachment\(supplementalAttachmentCount == 1 ? "" : "s") are ready for \(providerName). Tap Paste Context, then Attach Files."
+                return "Memory context and \(supplementalAttachmentCount) saved attachment\(supplementalAttachmentCount == 1 ? "" : "s") are ready for \(destination). Tap Paste Context, then Attach Files."
+            }
+            if isCurrentConversation {
+                return "Memory context is ready for \(destination). Tap Paste Context to insert it, or continue without it."
             }
             return bundle.statusMessage(for: providerName)
         }
 
         let names = handoffFileURLs.map(\.lastPathComponent).joined(separator: ", ")
-        return "\(bundle.selectedCount) Memory \(bundle.selectedCount == 1 ? "entry is" : "entries are") ready for \(providerName): \(names)."
+        return "\(bundle.selectedCount) Memory \(bundle.selectedCount == 1 ? "entry is" : "entries are") ready for \(destination): \(names)."
     }
 }
