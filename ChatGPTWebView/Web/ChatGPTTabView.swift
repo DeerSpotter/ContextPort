@@ -238,22 +238,32 @@ struct AIChatTabView: View {
 
         sourceMemoryIDs = payload.sourceMemoryIDs
         sourceMemorySessionID = activeSessionID
-        webViewStore.startNewChatWithPendingUploadURLs(payload.fileURLs)
+
+        switch payload.handoffMode {
+        case .newConversation:
+            webViewStore.startNewChatWithPendingUploadURLs(payload.fileURLs)
+        case .currentConversation:
+            webViewStore.preparePendingUploadURLs(payload.fileURLs)
+        }
+
+        let destination = payload.handoffMode == .currentConversation
+            ? "the current \(provider.displayName) conversation"
+            : provider.displayName
 
         if let composerText = payload.composerText, !composerText.isEmpty {
             pendingPasteContextText = composerText
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextID = UUID()
             if payload.fileURLs.isEmpty {
-                appModel.statusMessage = "Saved Markdown is ready for \(provider.displayName). Tap Paste Context to insert it, or continue without it."
+                appModel.statusMessage = "Saved Markdown is ready for \(destination). Tap Paste Context to insert it, or continue without it."
             } else {
-                appModel.statusMessage = "Saved Markdown and \(payload.fileURLs.count) Memory attachment\(payload.fileURLs.count == 1 ? "" : "s") are ready for \(provider.displayName). Tap Paste Context first, then Attach Files."
+                appModel.statusMessage = "Saved Markdown and \(payload.fileURLs.count) Memory attachment\(payload.fileURLs.count == 1 ? "" : "s") are ready for \(destination). Tap Paste Context first, then Attach Files."
             }
             watchForConversationStartWithoutPaste(pendingPasteContextID)
         } else if !payload.fileURLs.isEmpty {
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextText = nil
-            appModel.statusMessage = "Files are ready. Tap Attach Files to attach from app Memory to \(provider.displayName)."
+            appModel.statusMessage = "Files are ready. Tap Attach Files to attach from app Memory to \(destination)."
         }
     }
 

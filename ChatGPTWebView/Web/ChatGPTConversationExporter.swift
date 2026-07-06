@@ -9,6 +9,7 @@ struct ChatConversationExportResult {
     let sourceURL: String
     let exportedAt: String
     let pdfData: Data
+    let extractionHealth: ProviderExtractionHealthReport
 }
 
 enum ChatConversationExportError: LocalizedError {
@@ -17,6 +18,7 @@ enum ChatConversationExportError: LocalizedError {
     case securityInterstitialDetected
     case noMessagesFound
     case invalidConversationStructure
+    case providerUIChanged(String)
     case cannotCreatePDF
 
     var errorDescription: String? {
@@ -31,6 +33,8 @@ enum ChatConversationExportError: LocalizedError {
             return "No positively identified conversation messages were found. The AI page may have changed or may not be a conversation."
         case .invalidConversationStructure:
             return "ContextPort found conversation content but could not verify both a user turn and an AI response. Nothing was saved."
+        case .providerUIChanged(let message):
+            return message
         case .cannotCreatePDF:
             return "The Markdown export was created, but the PDF renderer could not create a PDF."
         }
@@ -48,6 +52,7 @@ private struct ChatConversationExportPayload: Decodable {
     let sourceURL: String
     let exportedAt: String
     let error: String?
+    let diagnostics: ProviderExtractionDiagnostics
 }
 
 private struct ValidatedConversationTurn {
@@ -87,17 +92,30 @@ final class ChatConversationExporter {
         }
 
         let payload = try JSONDecoder().decode(ChatConversationExportPayload.self, from: data)
-        if payload.error == "security-interstitial" {
-            throw ChatConversationExportError.securityInterstitialDetected
+        let turns = payload.turns.compactMap(validateTurn)
+        let userTurnCount = turns.filter { $0.role == .user }.count
+        let assistantTurnCount = turns.filter { $0.role == .assistant }.count
+        let healthReport = ProviderExtractionHealthMonitor.evaluate(
+            provider: provider,
+            diagnostics: payload.diagnostics,
+            userTurnCount: userTurnCount,
+            assistantTurnCount: assistantTurnCount
+        )
+
+        ProviderExtractionHealthAlertPresenter.presentIfNeeded(healthReport)
+
+        if healthReport.state == .unsafe {
+            if payload.error == "security-interstitial" || healthReport.challengeDetected {
+                throw ChatConversationExportError.securityInterstitialDetected
+            }
+            throw ChatConversationExportError.providerUIChanged(healthReport.failureDescription)
         }
 
-        let turns = payload.turns.compactMap(validateTurn)
         guard !turns.isEmpty else {
             throw ChatConversationExportError.noMessagesFound
         }
 
-        guard turns.contains(where: { $0.role == .user }),
-              turns.contains(where: { $0.role == .assistant }) else {
+        guard userTurnCount > 0, assistantTurnCount > 0 else {
             throw ChatConversationExportError.invalidConversationStructure
         }
 
@@ -126,7 +144,8 @@ final class ChatConversationExporter {
             messageCount: messageCount,
             sourceURL: sourceURL,
             exportedAt: exportedAt,
-            pdfData: pdfData
+            pdfData: pdfData,
+            extractionHealth: healthReport
         )
     }
 
@@ -295,30 +314,61 @@ final class ChatConversationExporter {
           };
           const pushTurn = (turns, seen, role, content) => {
             const value = normalize(content);
-            if (!['user','assistant'].includes(role) || value.length < 5 || value.length >= 300000 || isInterstitial(value)) return;
+            if (!['user','assistant'].includes(role) || value.length < 5 || value.length >= 300000 || isInterstitial(value)) return false;
             const key = `${role}:${value.slice(0,220)}`;
-            if (seen.has(key)) return;
+            if (seen.has(key)) return false;
             seen.add(key);
             turns.push({ role, content: value });
+            return true;
           };
+          const hasBothRoles = turns => turns.some(turn => turn.role === 'user') && turns.some(turn => turn.role === 'assistant');
+          const diagnostics = (strategy, expectedCanaries, matchedCanaries, usedFallback = false, unclassifiedCandidateCount = 0) => ({
+            strategyVersion: 1,
+            strategy,
+            expectedCanaries,
+            matchedCanaries,
+            usedFallback,
+            challengeDetected: false,
+            unclassifiedCandidateCount
+          });
           const extractChatGPT = () => {
             const turns = [], seen = new Set();
-            topLevel(all(document, '[data-message-author-role]')).forEach(node => {
+            const nodes = topLevel(all(document, '[data-message-author-role]'));
+            let unclassified = 0;
+            nodes.forEach(node => {
               const role = String(node.getAttribute('data-message-author-role') || '').toLowerCase();
+              if (!['user','assistant'].includes(role)) unclassified += 1;
               pushTurn(turns, seen, role, serialize(node));
             });
-            return turns;
+            return {
+              turns,
+              diagnostics: diagnostics(
+                'chatgpt-explicit-author-role',
+                ['data-message-author-role'],
+                nodes.length > 0 ? ['data-message-author-role'] : [],
+                false,
+                unclassified
+              )
+            };
           };
           const extractClaude = () => {
-            const turns = [], seen = new Set();
             const assistantHeadingSelector = 'h1[data-find-omitted],h2[data-find-omitted],h3[data-find-omitted]';
             const assistantBodySelector = '.font-claude-response-body,.progressive-markdown,.standard-markdown';
             const rows = topLevel(all(document, '[data-test-render-count]'));
+            const userNodes = topLevel(all(document, '[data-testid="user-message"]'));
+            const responseHeadings = all(document, assistantHeadingSelector).filter(heading => /^Claude responded:/i.test(text(heading)));
+            const responseBodies = topLevel(all(document, assistantBodySelector)).filter(block => !block.closest('[data-testid="user-message"]'));
+            const expectedCanaries = ['data-test-render-count','user-message','claude-response-evidence'];
+            const matchedCanaries = [];
+            if (rows.length > 0) matchedCanaries.push('data-test-render-count');
+            if (userNodes.length > 0) matchedCanaries.push('user-message');
+            if (responseHeadings.length > 0 || responseBodies.length > 0) matchedCanaries.push('claude-response-evidence');
 
+            const primaryTurns = [], primarySeen = new Set();
             rows.forEach(row => {
               const user = row.querySelector('[data-testid="user-message"]');
               if (user) {
-                pushTurn(turns, seen, 'user', serialize(user));
+                pushTurn(primaryTurns, primarySeen, 'user', serialize(user));
                 return;
               }
 
@@ -328,48 +378,78 @@ final class ChatConversationExporter {
                 const content = responseBlocks.length > 0
                   ? responseBlocks.map(serialize).filter(Boolean).join('\n\n')
                   : serialize(row);
-                pushTurn(turns, seen, 'assistant', content);
+                pushTurn(primaryTurns, primarySeen, 'assistant', content);
               }
             });
 
-            if (turns.length > 0) return turns;
+            if (hasBothRoles(primaryTurns)) {
+              return {
+                turns: primaryTurns,
+                diagnostics: diagnostics('claude-standard-chat', expectedCanaries, matchedCanaries)
+              };
+            }
 
             const candidates = [];
-            topLevel(all(document, '[data-testid="user-message"]')).forEach(node => {
+            userNodes.forEach(node => {
               candidates.push({ node, role: 'user', content: serialize(node) });
             });
-            all(document, assistantHeadingSelector)
-              .filter(heading => /^Claude responded:/i.test(text(heading)))
-              .forEach(heading => {
-                const root = heading.parentElement || heading;
-                const responseBlocks = topLevel(all(root, assistantBodySelector));
-                candidates.push({
-                  node: root,
-                  role: 'assistant',
-                  content: responseBlocks.length > 0
-                    ? responseBlocks.map(serialize).filter(Boolean).join('\n\n')
-                    : serialize(root)
-                });
+            responseHeadings.forEach(heading => {
+              const root = heading.parentElement || heading;
+              const responseBlocks = topLevel(all(root, assistantBodySelector));
+              candidates.push({
+                node: root,
+                role: 'assistant',
+                content: responseBlocks.length > 0
+                  ? responseBlocks.map(serialize).filter(Boolean).join('\n\n')
+                  : serialize(root)
               });
+            });
             candidates.sort((left, right) => {
               if (left.node === right.node) return 0;
               return left.node.compareDocumentPosition(right.node) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
             });
-            candidates.forEach(candidate => pushTurn(turns, seen, candidate.role, candidate.content));
-            return turns;
+
+            const fallbackTurns = [], fallbackSeen = new Set();
+            candidates.forEach(candidate => pushTurn(fallbackTurns, fallbackSeen, candidate.role, candidate.content));
+            return {
+              turns: fallbackTurns,
+              diagnostics: diagnostics(
+                'claude-direct-role-evidence',
+                expectedCanaries,
+                matchedCanaries,
+                true
+              )
+            };
           };
           const extractGrok = () => {
             const turns = [], seen = new Set();
-            topLevel(all(document, '[data-testid="user-message"],[data-testid="assistant-message"]')).forEach(node => {
+            const userNodes = topLevel(all(document, '[data-testid="user-message"]'));
+            const assistantNodes = topLevel(all(document, '[data-testid="assistant-message"]'));
+            const nodes = topLevel(all(document, '[data-testid="user-message"],[data-testid="assistant-message"]'));
+            nodes.forEach(node => {
               const testID = String(node.getAttribute('data-testid') || '').toLowerCase();
               const role = testID === 'user-message' ? 'user' : testID === 'assistant-message' ? 'assistant' : '';
               pushTurn(turns, seen, role, serialize(node));
             });
-            return turns;
+            const matchedCanaries = [];
+            if (userNodes.length > 0) matchedCanaries.push('user-message');
+            if (assistantNodes.length > 0) matchedCanaries.push('assistant-message');
+            return {
+              turns,
+              diagnostics: diagnostics(
+                'grok-message-testids',
+                ['user-message','assistant-message'],
+                matchedCanaries
+              )
+            };
           };
           const extractGemini = () => {
             const turns = [], seen = new Set();
-            const selectors = 'user-query,model-response,[data-message-author-role],[data-test-id="user-query"],[data-test-id="model-response"],[data-testid="user-query"],[data-testid="model-response"]';
+            const userSelector = 'user-query,[data-message-author-role="user"],[data-test-id="user-query"],[data-testid="user-query"]';
+            const assistantSelector = 'model-response,[data-message-author-role="assistant"],[data-test-id="model-response"],[data-testid="model-response"]';
+            const selectors = `${userSelector},${assistantSelector}`;
+            const userNodes = topLevel(all(document, userSelector));
+            const assistantNodes = topLevel(all(document, assistantSelector));
             topLevel(all(document, selectors)).forEach(node => {
               const explicitRole = String(node.getAttribute('data-message-author-role') || '').toLowerCase();
               const identity = [node.tagName,node.getAttribute('data-test-id'),node.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase();
@@ -380,7 +460,17 @@ final class ChatConversationExporter {
                   : '';
               pushTurn(turns, seen, role, serialize(node));
             });
-            return turns;
+            const matchedCanaries = [];
+            if (userNodes.length > 0) matchedCanaries.push('user-query');
+            if (assistantNodes.length > 0) matchedCanaries.push('model-response');
+            return {
+              turns,
+              diagnostics: diagnostics(
+                'gemini-explicit-turn-evidence',
+                ['user-query','model-response'],
+                matchedCanaries
+              )
+            };
           };
           const extractor = {
             chatgpt: extractChatGPT,
@@ -388,12 +478,24 @@ final class ChatConversationExporter {
             gemini: extractGemini,
             grok: extractGrok
           }[providerID];
-          const turns = extractor ? extractor() : [];
+          const extraction = extractor
+            ? extractor()
+            : { turns: [], diagnostics: diagnostics('unsupported-provider', ['supported-provider'], []) };
+          const turns = extraction.turns;
           const exportedAt = new Date().toISOString();
           const source = window.location.href || providerStartURL;
           const pageHasInterstitial = isInterstitial(document.documentElement?.innerHTML || '') || isInterstitial(text(document.body));
-          const error = turns.length === 0 && pageHasInterstitial ? 'security-interstitial' : null;
-          return JSON.stringify({ title, turns, sourceURL: source, exportedAt, error });
+          const blockingChallengeDetected = turns.length === 0 && pageHasInterstitial;
+          const error = blockingChallengeDetected ? 'security-interstitial' : null;
+          extraction.diagnostics.challengeDetected = blockingChallengeDetected;
+          return JSON.stringify({
+            title,
+            turns,
+            sourceURL: source,
+            exportedAt,
+            error,
+            diagnostics: extraction.diagnostics
+          });
         })();
         """#
     }
