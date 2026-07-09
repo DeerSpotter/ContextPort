@@ -521,7 +521,8 @@ private enum DeveloperSourceSecondPassScanner {
             (#"importScripts\s*\(\s*[\"']([^\"']+)[\"']"#, "Imported Worker Script"),
             (#"import\s*\(\s*[\"']([^\"']+)[\"']\s*\)"#, "Dynamic JavaScript"),
             (#"(?:import|export)\s+(?:[^\"']*?\s+from\s+)?[\"']([^\"']+)[\"']"#, "Module JavaScript"),
-            (#"[\"']([^\"']+\.(?:m?js|cjs|css|map|wasm)(?:\?[^\"']*)?)[\"']"#, "Referenced Source")
+            (#"new\s+URL\s*\(\s*[\"']([^\"']+\.(?:m?js|cjs|css|map|wasm)(?:\?[^\"']*)?)[\"']"#, "URL Source"),
+            (#"[\"']((?:https?:)?//[^\"']+\.(?:m?js|cjs|css|map|wasm)(?:\?[^\"']*)?)[\"']"#, "Absolute Referenced Source")
         ]
 
         for (pattern, kind) in patterns {
@@ -561,7 +562,212 @@ private enum DeveloperSourceSecondPassScanner {
             }
         }
 
+        for candidate in bundlerRuntimeCandidates(in: content, source: source) {
+            let key = "\(candidate.kind)\u{1F}\(candidate.rawReference)"
+            guard candidates.count < 2_048,
+                  !seen.contains(key) else {
+                continue
+            }
+            seen.insert(key)
+            candidates.append(candidate)
+        }
+
         return candidates
+    }
+
+    private static func bundlerRuntimeCandidates(
+        in content: String,
+        source: DeveloperSourceFile
+    ) -> [Candidate] {
+        let nsContent = content as NSString
+        let fullRange = NSRange(location: 0, length: nsContent.length)
+        let sourceBaseURL = source.urlString.flatMap(URL.init(string:))
+        let referencedChunkIDs = numericCaptures(
+            in: content,
+            pattern: #"\.(?:u|e)\(\s*(\d+)\s*\)"#
+        )
+        let workerChunkIDs = numericCaptures(
+            in: content,
+            pattern: #"new\s+(?:Shared)?Worker\s*\(\s*new\s+URL\s*\([^)]*?\.u\(\s*(\d+)\s*\)"#
+        )
+
+        guard !referencedChunkIDs.isEmpty else { return [] }
+
+        var candidates: [Candidate] = []
+        let javascriptRuntimePattern = #"([A-Za-z_$][A-Za-z0-9_$]*)\.u=([A-Za-z_$][A-Za-z0-9_$]*)=>[\"']([^\"']*)[\"']\+\(\(\{(.*?)\}\)\[\2\]\|\|\2\)\+[\"']\.[\"']\+\(\{(.*?)\}\)\[\2\]\+[\"']\.js[\"']"#
+
+        if let regex = try? NSRegularExpression(
+            pattern: javascriptRuntimePattern,
+            options: [.dotMatchesLineSeparators]
+        ) {
+            for match in regex.matches(in: content, options: [], range: fullRange) {
+                guard match.numberOfRanges > 5 else { continue }
+
+                let runtimeName = nsContent.substring(with: match.range(at: 1))
+                let prefix = nsContent.substring(with: match.range(at: 3))
+                let names = objectMap(nsContent.substring(with: match.range(at: 4)))
+                let hashes = objectMap(nsContent.substring(with: match.range(at: 5)))
+                let publicPath = runtimePublicPath(runtimeName, in: content)
+                let runtimeBaseURL = bundlerBaseURL(
+                    publicPath: publicPath,
+                    sourceBaseURL: sourceBaseURL
+                )
+
+                for chunkID in referencedChunkIDs.sorted() {
+                    let key = String(chunkID)
+                    guard let hash = hashes[key] else { continue }
+
+                    let name = names[key] ?? key
+                    let path = "\(prefix)\(name).\(hash).js"
+                    let kind = workerChunkIDs.contains(chunkID)
+                        ? "Bundler Worker Chunk"
+                        : "Bundler JavaScript Chunk"
+
+                    candidates.append(
+                        Candidate(
+                            rawReference: path,
+                            kind: kind,
+                            parentSourceID: source.id,
+                            baseURL: runtimeBaseURL
+                        )
+                    )
+                }
+            }
+        }
+
+        let stylesheetRuntimePattern = #"([A-Za-z_$][A-Za-z0-9_$]*)\.k=([A-Za-z_$][A-Za-z0-9_$]*)=>[\"']([^\"']*)[\"']\+\(\{(.*?)\}\)\[\2\]\+[\"']\.[\"']\+\(\{(.*?)\}\)\[\2\]\+[\"']\.css[\"']"#
+
+        if let regex = try? NSRegularExpression(
+            pattern: stylesheetRuntimePattern,
+            options: [.dotMatchesLineSeparators]
+        ) {
+            for match in regex.matches(in: content, options: [], range: fullRange) {
+                guard match.numberOfRanges > 5 else { continue }
+
+                let runtimeName = nsContent.substring(with: match.range(at: 1))
+                let prefix = nsContent.substring(with: match.range(at: 3))
+                let names = objectMap(nsContent.substring(with: match.range(at: 4)))
+                let hashes = objectMap(nsContent.substring(with: match.range(at: 5)))
+                let publicPath = runtimePublicPath(runtimeName, in: content)
+                let runtimeBaseURL = bundlerBaseURL(
+                    publicPath: publicPath,
+                    sourceBaseURL: sourceBaseURL
+                )
+
+                for chunkID in referencedChunkIDs.sorted() {
+                    let key = String(chunkID)
+                    guard let name = names[key],
+                          let hash = hashes[key] else {
+                        continue
+                    }
+
+                    candidates.append(
+                        Candidate(
+                            rawReference: "\(prefix)\(name).\(hash).css",
+                            kind: "Bundler Stylesheet",
+                            parentSourceID: source.id,
+                            baseURL: runtimeBaseURL
+                        )
+                    )
+                }
+            }
+        }
+
+        return candidates
+    }
+
+    private static func numericCaptures(
+        in content: String,
+        pattern: String
+    ) -> Set<Int> {
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive]
+        ) else {
+            return []
+        }
+
+        let nsContent = content as NSString
+        let fullRange = NSRange(location: 0, length: nsContent.length)
+        var values = Set<Int>()
+
+        for match in regex.matches(in: content, options: [], range: fullRange) {
+            guard match.numberOfRanges > 1,
+                  match.range(at: 1).location != NSNotFound,
+                  let value = Int(nsContent.substring(with: match.range(at: 1))) else {
+                continue
+            }
+            values.insert(value)
+        }
+
+        return values
+    }
+
+    private static func objectMap(_ content: String) -> [String: String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(\d+):[\"']([^\"']+)[\"']"#,
+            options: []
+        ) else {
+            return [:]
+        }
+
+        let nsContent = content as NSString
+        let fullRange = NSRange(location: 0, length: nsContent.length)
+        var values: [String: String] = [:]
+
+        for match in regex.matches(in: content, options: [], range: fullRange) {
+            guard match.numberOfRanges > 2,
+                  match.range(at: 1).location != NSNotFound,
+                  match.range(at: 2).location != NSNotFound else {
+                continue
+            }
+
+            values[nsContent.substring(with: match.range(at: 1))] =
+                nsContent.substring(with: match.range(at: 2))
+        }
+
+        return values
+    }
+
+    private static func runtimePublicPath(
+        _ runtimeName: String,
+        in content: String
+    ) -> String? {
+        let escapedRuntimeName = NSRegularExpression.escapedPattern(for: runtimeName)
+        guard let regex = try? NSRegularExpression(
+            pattern: escapedRuntimeName + #"\.p\s*=\s*[\"']([^\"']+)[\"']"#,
+            options: []
+        ) else {
+            return nil
+        }
+
+        let nsContent = content as NSString
+        let fullRange = NSRange(location: 0, length: nsContent.length)
+        guard let match = regex.matches(in: content, options: [], range: fullRange).last,
+              match.numberOfRanges > 1,
+              match.range(at: 1).location != NSNotFound else {
+            return nil
+        }
+
+        return nsContent.substring(with: match.range(at: 1))
+    }
+
+    private static func bundlerBaseURL(
+        publicPath: String?,
+        sourceBaseURL: URL?
+    ) -> URL? {
+        guard let publicPath, !publicPath.isEmpty else {
+            return sourceBaseURL
+        }
+
+        if let absolute = URL(string: publicPath),
+           let scheme = absolute.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return absolute
+        }
+
+        return URL(string: publicPath, relativeTo: sourceBaseURL)?.absoluteURL
+            ?? sourceBaseURL
     }
 
     private static func resolveReference(_ raw: String, relativeTo baseURL: URL?) -> URL? {
@@ -930,7 +1136,7 @@ struct DeveloperSourcesView: View {
                 } header: {
                     Text("Source Inspector")
                 } footer: {
-                    Text("The first pass inventories loaded scripts, styles, module preloads, and runtime resources. A bounded second pass reconciles late runtime entries and source references for workers, imports, chunks, source maps, and WASM metadata. The retained index stays in memory until ContextPort closes. Save Sources to Memory packages the complete retained index into one ZIP regardless of the active search filter.")
+                    Text("The first pass inventories loaded scripts, styles, module preloads, and runtime resources. A bounded second pass reconciles late runtime entries, explicit source references, and numeric Webpack/Rspack chunk calls against shipped runtime chunk tables. The retained index stays in memory until ContextPort closes. Save Sources to Memory packages the complete retained index into one ZIP regardless of the active search filter.")
                 }
 
                 Section("Sources") {
