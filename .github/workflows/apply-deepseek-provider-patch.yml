@@ -1,0 +1,44 @@
+name: Apply DeepSeek Provider Patch
+
+on:
+  push:
+    branches:
+      - codex/add-deepseek-provider
+    paths:
+      - ".github/deepseek-provider-patch.py"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/add-deepseek-provider
+          fetch-depth: 0
+
+      - name: Apply validated DeepSeek provider patch
+        run: python3 .github/deepseek-provider-patch.py
+
+      - name: Remove temporary patch helpers
+        run: |
+          rm .github/deepseek-provider-patch.py
+          rm .github/workflows/apply-deepseek-provider-patch.yml
+
+      - name: Validate final diff
+        run: |
+          git diff --check
+          test ! -e .github/deepseek-provider-patch.py
+          test ! -e .github/workflows/apply-deepseek-provider-patch.yml
+
+      - name: Commit patched source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "add native DeepSeek provider foundation"
+          git push origin HEAD:codex/add-deepseek-provider
