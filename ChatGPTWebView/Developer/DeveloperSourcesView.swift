@@ -9,12 +9,12 @@ struct DeveloperWebViewSession {
     let webView: WKWebView
 }
 
-private struct DeveloperDiscoveredPage: Decodable {
+private struct DeveloperDiscoveredPage: Decodable, Sendable {
     let pageURL: String
     let sources: [DeveloperDiscoveredSource]
 }
 
-private struct DeveloperDiscoveredSource: Decodable {
+private struct DeveloperDiscoveredSource: Decodable, Sendable {
     let key: String
     let displayName: String
     let url: String?
@@ -22,7 +22,7 @@ private struct DeveloperDiscoveredSource: Decodable {
     let inlineSource: String?
 }
 
-private struct DeveloperSourceFile: Identifiable {
+private struct DeveloperSourceFile: Identifiable, Sendable {
     let id: String
     let sessionTitle: String
     let pageURL: String
@@ -37,7 +37,7 @@ private struct DeveloperSourceFile: Identifiable {
     }
 }
 
-private struct DeveloperSourceSearchResult: Identifiable {
+private struct DeveloperSourceSearchResult: Identifiable, Sendable {
     let source: DeveloperSourceFile
     let matchCount: Int
     let snippets: [String]
@@ -46,6 +46,11 @@ private struct DeveloperSourceSearchResult: Identifiable {
     var id: String {
         source.id
     }
+}
+
+private struct DeveloperSourceSecondPassInventory: Sendable {
+    let externalDescriptors: [DeveloperDiscoveredSource]
+    let inlineFiles: [DeveloperSourceFile]
 }
 
 @MainActor
@@ -100,48 +105,72 @@ private final class DeveloperSourcesModel: ObservableObject {
         }
 
         isScanning = true
-        status = "Reading loaded source inventories..."
+        status = "Reading first-pass source inventories..."
 
         scanTask = Task { [weak self] in
             guard let self else { return }
 
             var collected: [DeveloperSourceFile] = []
             var scannedSessionCount = 0
+            var firstPassCount = 0
+            var secondPassCount = 0
 
             for session in sessions {
                 guard !Task.isCancelled else { return }
 
                 do {
-                    let page = try await Self.discoverSources(in: session.webView)
+                    let cookieHeader = await developerCookieHeader(for: session.webView)
+                    let firstPage = try await Self.discoverSources(in: session.webView)
                     scannedSessionCount += 1
 
-                    let inlineSources = page.sources.compactMap { descriptor -> DeveloperSourceFile? in
-                        guard let inlineSource = descriptor.inlineSource else { return nil }
+                    let firstInline = Self.inlineFiles(
+                        from: firstPage.sources,
+                        session: session,
+                        pageURL: firstPage.pageURL
+                    )
+                    collected.append(contentsOf: firstInline)
 
-                        return DeveloperSourceFile(
-                            id: "\(session.id)::\(descriptor.key)",
-                            sessionTitle: session.title,
-                            pageURL: page.pageURL,
-                            displayName: descriptor.displayName,
-                            urlString: descriptor.url,
-                            kind: descriptor.kind,
-                            content: inlineSource,
-                            loadError: nil
-                        )
-                    }
-                    collected.append(contentsOf: inlineSources)
-
-                    let externalDescriptors = page.sources.filter {
+                    let firstExternalDescriptors = firstPage.sources.filter {
                         $0.inlineSource == nil && $0.url != nil
                     }
-                    let loadedSources = await loadExternalDeveloperSources(
-                        externalDescriptors,
+                    let firstExternal = await loadExternalDeveloperSources(
+                        firstExternalDescriptors,
                         sessionID: session.id,
                         sessionTitle: session.title,
-                        pageURL: page.pageURL,
-                        userAgent: session.webView.customUserAgent
+                        pageURL: firstPage.pageURL,
+                        userAgent: session.webView.customUserAgent,
+                        cookieHeader: cookieHeader
                     )
-                    collected.append(contentsOf: loadedSources)
+                    collected.append(contentsOf: firstExternal)
+
+                    let firstPassSessionFiles = firstInline + firstExternal
+                    firstPassCount += firstPassSessionFiles.count
+
+                    guard !Task.isCancelled else { return }
+                    self.status = "Reconciling runtime and referenced sources..."
+
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    let latePage = try? await Self.discoverSources(in: session.webView)
+                    let secondInventory = DeveloperSourceSecondPassScanner.discover(
+                        firstPage: firstPage,
+                        latePage: latePage,
+                        firstPassFiles: firstPassSessionFiles,
+                        sessionID: session.id,
+                        sessionTitle: session.title,
+                        pageURL: firstPage.pageURL
+                    )
+
+                    collected.append(contentsOf: secondInventory.inlineFiles)
+                    let secondExternal = await loadExternalDeveloperSources(
+                        secondInventory.externalDescriptors,
+                        sessionID: session.id,
+                        sessionTitle: session.title,
+                        pageURL: firstPage.pageURL,
+                        userAgent: session.webView.customUserAgent,
+                        cookieHeader: cookieHeader
+                    )
+                    collected.append(contentsOf: secondExternal)
+                    secondPassCount += secondInventory.inlineFiles.count + secondExternal.count
                 } catch {
                     collected.append(
                         DeveloperSourceFile(
@@ -160,7 +189,7 @@ private final class DeveloperSourcesModel: ObservableObject {
 
             guard !Task.isCancelled else { return }
 
-            self.sources = collected.sorted {
+            self.sources = DeveloperSourceSecondPassScanner.deduplicate(collected).sorted {
                 if $0.sessionTitle == $1.sessionTitle {
                     return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
                 }
@@ -170,7 +199,7 @@ private final class DeveloperSourcesModel: ObservableObject {
                 for: self.archiveSnapshot()
             )
             self.isScanning = false
-            self.status = "Indexed \(self.sources.count) sources from \(scannedSessionCount) loaded session\(scannedSessionCount == 1 ? "" : "s"). Kept until ContextPort closes."
+            self.status = "Indexed \(self.sources.count) sources from \(scannedSessionCount) loaded session\(scannedSessionCount == 1 ? "" : "s") • \(firstPassCount) first pass • \(secondPassCount) second pass. Kept until ContextPort closes."
             self.scheduleSearch(self.currentQuery)
         }
     }
@@ -210,6 +239,27 @@ private final class DeveloperSourcesModel: ObservableObject {
         }
     }
 
+    private static func inlineFiles(
+        from descriptors: [DeveloperDiscoveredSource],
+        session: DeveloperWebViewSession,
+        pageURL: String
+    ) -> [DeveloperSourceFile] {
+        descriptors.compactMap { descriptor -> DeveloperSourceFile? in
+            guard let inlineSource = descriptor.inlineSource else { return nil }
+
+            return DeveloperSourceFile(
+                id: "\(session.id)::\(descriptor.key)",
+                sessionTitle: session.title,
+                pageURL: pageURL,
+                displayName: descriptor.displayName,
+                urlString: descriptor.url,
+                kind: descriptor.kind,
+                content: inlineSource,
+                loadError: nil
+            )
+        }
+    }
+
     private static func discoverSources(in webView: WKWebView) async throws -> DeveloperDiscoveredPage {
         let script = #"""
         (() => {
@@ -226,6 +276,16 @@ private final class DeveloperSourcesModel: ObservableObject {
                 }
             };
 
+            const classifyResource = (url, initiatorType) => {
+                const clean = String(url || '').split('#')[0].toLowerCase();
+                if (/\.css(?:$|\?)/i.test(clean)) return 'Stylesheet';
+                if (/\.map(?:$|\?)/i.test(clean)) return 'Source Map';
+                if (/\.wasm(?:$|\?)/i.test(clean)) return 'WebAssembly Binary';
+                if (initiatorType === 'worker') return 'Worker JavaScript';
+                if (initiatorType === 'script') return 'JavaScript';
+                return 'Runtime Resource';
+            };
+
             const addExternal = (rawURL, kind, fallbackName) => {
                 if (!rawURL) return;
 
@@ -234,7 +294,7 @@ private final class DeveloperSourcesModel: ObservableObject {
                     absoluteURL = new URL(rawURL, document.baseURI).href;
                 } catch (_) {}
 
-                if (seen.has(absoluteURL)) return;
+                if (!/^https?:/i.test(absoluteURL) || seen.has(absoluteURL)) return;
                 seen.add(absoluteURL);
                 sources.push({
                     key: `external:${absoluteURL}`,
@@ -263,16 +323,28 @@ private final class DeveloperSourcesModel: ObservableObject {
                 });
             });
 
-            Array.from(document.querySelectorAll('link[rel~="stylesheet"][href]')).forEach((link, index) => {
-                addExternal(link.href, 'Stylesheet', `Stylesheet ${index + 1}`);
+            Array.from(document.querySelectorAll('link[href]')).forEach((link, index) => {
+                const rel = String(link.rel || '').toLowerCase();
+                const as = String(link.as || '').toLowerCase();
+                const href = link.href;
+                if (!href) return;
+
+                if (rel.split(/\s+/).includes('stylesheet')) {
+                    addExternal(href, 'Stylesheet', `Stylesheet ${index + 1}`);
+                } else if (rel.split(/\s+/).includes('modulepreload')) {
+                    addExternal(href, 'JavaScript Module Preload', `Module Preload ${index + 1}`);
+                } else if (rel.split(/\s+/).includes('preload') && ['script', 'style', 'worker'].includes(as)) {
+                    addExternal(href, classifyResource(href, as), `Preload ${index + 1}`);
+                }
             });
 
             try {
                 performance.getEntriesByType('resource').forEach((entry) => {
-                    if (entry.initiatorType === 'script') {
-                        addExternal(entry.name, 'JavaScript', 'Loaded Script');
-                    } else if (entry.initiatorType === 'link' && /\.css(?:$|\?)/i.test(entry.name)) {
-                        addExternal(entry.name, 'Stylesheet', 'Loaded Stylesheet');
+                    const type = String(entry.initiatorType || '').toLowerCase();
+                    const supportedType = ['script', 'link', 'worker'].includes(type);
+                    const supportedExtension = /\.(?:m?js|cjs|css|map|wasm)(?:$|\?)/i.test(entry.name || '');
+                    if (supportedType || supportedExtension) {
+                        addExternal(entry.name, classifyResource(entry.name, type), 'Runtime Resource');
                     }
                 });
             } catch (_) {}
@@ -302,6 +374,268 @@ private enum DeveloperSourceScanError: LocalizedError {
         case .invalidInventory:
             return "The page did not return a readable source inventory."
         }
+    }
+}
+
+private enum DeveloperSourceSecondPassScanner {
+    private static let maximumSecondPassExternalSources = 512
+    private static let maximumInlineDataSources = 64
+    private static let maximumDataSourceBytes = 24 * 1024 * 1024
+
+    private struct Candidate {
+        let rawReference: String
+        let kind: String
+        let parentSourceID: String
+        let baseURL: URL?
+    }
+
+    static func discover(
+        firstPage: DeveloperDiscoveredPage,
+        latePage: DeveloperDiscoveredPage?,
+        firstPassFiles: [DeveloperSourceFile],
+        sessionID: String,
+        sessionTitle: String,
+        pageURL: String
+    ) -> DeveloperSourceSecondPassInventory {
+        var seenURLs = Set(
+            firstPage.sources.compactMap(\.url).compactMap(canonicalURLString)
+        )
+        var descriptors: [DeveloperDiscoveredSource] = []
+        var inlineFiles: [DeveloperSourceFile] = []
+
+        if let latePage {
+            for descriptor in latePage.sources where descriptor.inlineSource == nil {
+                guard descriptors.count < maximumSecondPassExternalSources,
+                      let urlString = descriptor.url,
+                      let canonical = canonicalURLString(urlString),
+                      !seenURLs.contains(canonical) else {
+                    continue
+                }
+
+                seenURLs.insert(canonical)
+                descriptors.append(
+                    DeveloperDiscoveredSource(
+                        key: "second-pass:runtime:\(canonical)",
+                        displayName: descriptor.displayName,
+                        url: canonical,
+                        kind: "Second Pass • Late \(descriptor.kind)",
+                        inlineSource: nil
+                    )
+                )
+            }
+        }
+
+        for file in firstPassFiles {
+            guard descriptors.count < maximumSecondPassExternalSources,
+                  let content = file.content,
+                  !content.isEmpty else {
+                continue
+            }
+
+            let candidates = referenceCandidates(in: content, source: file)
+            for (index, candidate) in candidates.enumerated() {
+                if candidate.rawReference.lowercased().hasPrefix("data:") {
+                    guard inlineFiles.count < maximumInlineDataSources,
+                          let decoded = decodeInlineDataReference(candidate.rawReference) else {
+                        continue
+                    }
+
+                    inlineFiles.append(
+                        DeveloperSourceFile(
+                            id: "\(sessionID)::second-pass:inline:\(candidate.parentSourceID):\(index)",
+                            sessionTitle: sessionTitle,
+                            pageURL: pageURL,
+                            displayName: "Inline Source Map \(inlineFiles.count + 1)",
+                            urlString: "data:source-map",
+                            kind: "Second Pass • Inline Source Map",
+                            content: decoded,
+                            loadError: nil
+                        )
+                    )
+                    continue
+                }
+
+                guard descriptors.count < maximumSecondPassExternalSources,
+                      let resolved = resolveReference(candidate.rawReference, relativeTo: candidate.baseURL),
+                      let canonical = canonicalURLString(resolved.absoluteString),
+                      !seenURLs.contains(canonical),
+                      isSourceLikeURL(resolved) else {
+                    continue
+                }
+
+                seenURLs.insert(canonical)
+                descriptors.append(
+                    DeveloperDiscoveredSource(
+                        key: "second-pass:reference:\(canonical)",
+                        displayName: displayName(for: resolved, fallback: "Referenced Source"),
+                        url: canonical,
+                        kind: "Second Pass • \(candidate.kind)",
+                        inlineSource: nil
+                    )
+                )
+            }
+        }
+
+        return DeveloperSourceSecondPassInventory(
+            externalDescriptors: descriptors,
+            inlineFiles: inlineFiles
+        )
+    }
+
+    static func deduplicate(_ files: [DeveloperSourceFile]) -> [DeveloperSourceFile] {
+        var seenIDs = Set<String>()
+        var seenURLSessionPairs = Set<String>()
+        var result: [DeveloperSourceFile] = []
+
+        for file in files {
+            guard !seenIDs.contains(file.id) else { continue }
+
+            if let urlString = file.urlString,
+               let canonical = canonicalURLString(urlString),
+               !urlString.lowercased().hasPrefix("data:") {
+                let pair = "\(file.sessionTitle)\u{1F}\(canonical)"
+                guard !seenURLSessionPairs.contains(pair) else { continue }
+                seenURLSessionPairs.insert(pair)
+            }
+
+            seenIDs.insert(file.id)
+            result.append(file)
+        }
+
+        return result
+    }
+
+    private static func referenceCandidates(
+        in content: String,
+        source: DeveloperSourceFile
+    ) -> [Candidate] {
+        let baseURL = source.urlString.flatMap(URL.init(string:))
+        let nsContent = content as NSString
+        let fullRange = NSRange(location: 0, length: nsContent.length)
+        var candidates: [Candidate] = []
+        var seen = Set<String>()
+
+        let patterns: [(String, String)] = [
+            (#"sourceMappingURL\s*=\s*([^\s*]+)"#, "Source Map"),
+            (#"new\s+(?:Shared)?Worker\s*\(\s*[\"']([^\"']+)[\"']"#, "Worker JavaScript"),
+            (#"importScripts\s*\(\s*[\"']([^\"']+)[\"']"#, "Imported Worker Script"),
+            (#"import\s*\(\s*[\"']([^\"']+)[\"']\s*\)"#, "Dynamic JavaScript"),
+            (#"(?:import|export)\s+(?:[^\"']*?\s+from\s+)?[\"']([^\"']+)[\"']"#, "Module JavaScript"),
+            (#"[\"']([^\"']+\.(?:m?js|cjs|css|map|wasm)(?:\?[^\"']*)?)[\"']"#, "Referenced Source")
+        ]
+
+        for (pattern, kind) in patterns {
+            guard candidates.count < 2_048,
+                  let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                continue
+            }
+
+            regex.enumerateMatches(in: content, options: [], range: fullRange) { match, _, stop in
+                guard let match,
+                      match.numberOfRanges > 1,
+                      candidates.count < 2_048 else {
+                    if candidates.count >= 2_048 {
+                        stop.pointee = true
+                    }
+                    return
+                }
+
+                let range = match.range(at: 1)
+                guard range.location != NSNotFound else { return }
+
+                let raw = nsContent.substring(with: range)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'` "))
+                guard !raw.isEmpty else { return }
+
+                let key = "\(kind)\u{1F}\(raw)"
+                guard !seen.contains(key) else { return }
+                seen.insert(key)
+                candidates.append(
+                    Candidate(
+                        rawReference: raw,
+                        kind: kind,
+                        parentSourceID: source.id,
+                        baseURL: baseURL
+                    )
+                )
+            }
+        }
+
+        return candidates
+    }
+
+    private static func resolveReference(_ raw: String, relativeTo baseURL: URL?) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("#"),
+              !trimmed.lowercased().hasPrefix("blob:"),
+              !trimmed.lowercased().hasPrefix("javascript:") else {
+            return nil
+        }
+
+        if let absolute = URL(string: trimmed),
+           let scheme = absolute.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return absolute
+        }
+
+        guard let baseURL else { return nil }
+        return URL(string: trimmed, relativeTo: baseURL)?.absoluteURL
+    }
+
+    private static func isSourceLikeURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return false
+        }
+
+        let path = url.path.lowercased()
+        return [".js", ".mjs", ".cjs", ".css", ".map", ".wasm"].contains {
+            path.hasSuffix($0)
+        }
+    }
+
+    private static func canonicalURLString(_ raw: String) -> String? {
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        components.fragment = nil
+        return components.url?.absoluteString
+    }
+
+    private static func displayName(for url: URL, fallback: String) -> String {
+        let name = url.lastPathComponent
+        return name.isEmpty ? fallback : name
+    }
+
+    private static func decodeInlineDataReference(_ raw: String) -> String? {
+        guard raw.lowercased().hasPrefix("data:"),
+              let comma = raw.firstIndex(of: ",") else {
+            return nil
+        }
+
+        let metadata = String(raw[raw.index(raw.startIndex, offsetBy: 5)..<comma]).lowercased()
+        guard metadata.contains("json") || metadata.contains("javascript") || metadata.contains("text") else {
+            return nil
+        }
+
+        let payload = String(raw[raw.index(after: comma)...])
+        let data: Data?
+        if metadata.contains(";base64") {
+            data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters])
+        } else {
+            data = payload.removingPercentEncoding?.data(using: .utf8)
+        }
+
+        guard let data,
+              data.count <= maximumDataSourceBytes else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
     }
 }
 
@@ -388,12 +722,24 @@ private enum DeveloperSourceSearchEngine {
     }
 }
 
+private func developerCookieHeader(for webView: WKWebView) async -> String? {
+    let cookies = await withCheckedContinuation { continuation in
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+            continuation.resume(returning: cookies)
+        }
+    }
+
+    guard !cookies.isEmpty else { return nil }
+    return HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
+}
+
 private func loadExternalDeveloperSources(
     _ descriptors: [DeveloperDiscoveredSource],
     sessionID: String,
     sessionTitle: String,
     pageURL: String,
-    userAgent: String?
+    userAgent: String?,
+    cookieHeader: String?
 ) async -> [DeveloperSourceFile] {
     guard !descriptors.isEmpty else { return [] }
 
@@ -413,7 +759,8 @@ private func loadExternalDeveloperSources(
                         sessionID: sessionID,
                         sessionTitle: sessionTitle,
                         pageURL: pageURL,
-                        userAgent: userAgent
+                        userAgent: userAgent,
+                        cookieHeader: cookieHeader
                     )
                 }
             }
@@ -437,7 +784,8 @@ private func loadExternalDeveloperSource(
     sessionID: String,
     sessionTitle: String,
     pageURL: String,
-    userAgent: String?
+    userAgent: String?,
+    cookieHeader: String?
 ) async -> DeveloperSourceFile {
     let sourceID = "\(sessionID)::\(descriptor.key)"
 
@@ -464,6 +812,10 @@ private func loadExternalDeveloperSource(
         if let userAgent, !userAgent.isEmpty {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
+        if let cookieHeader, !cookieHeader.isEmpty {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        request.setValue(pageURL, forHTTPHeaderField: "Referer")
 
         let (data, response) = try await URLSession.shared.data(for: request)
         let maximumSourceBytes = 24 * 1024 * 1024
@@ -477,7 +829,15 @@ private func loadExternalDeveloperSource(
             throw DeveloperSourceLoadError.sourceTooLarge(data.count)
         }
 
-        let content = String(decoding: data, as: UTF8.self)
+        let mimeType = response.mimeType?.lowercased() ?? ""
+        if url.pathExtension.lowercased() == "wasm" || mimeType == "application/wasm" {
+            throw DeveloperSourceLoadError.binaryResource(data.count)
+        }
+
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw DeveloperSourceLoadError.notUTF8
+        }
+
         return DeveloperSourceFile(
             id: sourceID,
             sessionTitle: sessionTitle,
@@ -505,6 +865,8 @@ private func loadExternalDeveloperSource(
 private enum DeveloperSourceLoadError: LocalizedError {
     case httpStatus(Int)
     case sourceTooLarge(Int)
+    case binaryResource(Int)
+    case notUTF8
 
     var errorDescription: String? {
         switch self {
@@ -512,6 +874,10 @@ private enum DeveloperSourceLoadError: LocalizedError {
             return "Source request returned HTTP \(statusCode)."
         case .sourceTooLarge(let byteCount):
             return "Source is \(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)), above the 24 MB per-source safety limit."
+        case .binaryResource(let byteCount):
+            return "Binary WebAssembly resource discovered (\(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file))). Recorded in the manifest but not decoded as source text."
+        case .notUTF8:
+            return "Source response is not valid UTF-8 text and was recorded without indexed content."
         }
     }
 }
@@ -564,7 +930,7 @@ struct DeveloperSourcesView: View {
                 } header: {
                     Text("Source Inspector")
                 } footer: {
-                    Text("The first Dev visit indexes loaded scripts and styles once. The source index and search results stay in memory across tabs and are cleared only when ContextPort closes. Save Sources to Memory packages the complete retained index into one ZIP regardless of the active search filter.")
+                    Text("The first pass inventories loaded scripts, styles, module preloads, and runtime resources. A bounded second pass reconciles late runtime entries and source references for workers, imports, chunks, source maps, and WASM metadata. The retained index stays in memory until ContextPort closes. Save Sources to Memory packages the complete retained index into one ZIP regardless of the active search filter.")
                 }
 
                 Section("Sources") {
