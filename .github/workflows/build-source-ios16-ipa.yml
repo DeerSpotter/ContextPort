@@ -40,7 +40,11 @@ jobs:
           set -o pipefail
           mkdir -p build
           test -f .github/deepseek-provider-patch.py
-          python3 .github/deepseek-provider-patch.py 2>&1 | tee build/deepseek-patch.log
+          test -f .github/deepseek-provider-patch-tail.py
+          {
+            python3 .github/deepseek-provider-patch.py || true
+            python3 .github/deepseek-provider-patch-tail.py
+          } 2>&1 | tee build/deepseek-patch.log
 
       - name: Upload patch diagnostics on failure
         if: failure()
@@ -56,10 +60,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -f .github/deepseek-provider-patch.py
+          rm -f .github/deepseek-provider-patch-tail.py
           rm -f .github/deepseek-provider-patch.trigger
           rm -f .github/workflows/apply-deepseek-provider-patch.yml
           git checkout origin/main -- .github/workflows/build-source-ios16-ipa.yml
           test ! -e .github/deepseek-provider-patch.py
+          test ! -e .github/deepseek-provider-patch-tail.py
           test ! -e .github/deepseek-provider-patch.trigger
           test ! -e .github/workflows/apply-deepseek-provider-patch.yml
 
