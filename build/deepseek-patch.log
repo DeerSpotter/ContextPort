@@ -1,6 +1,0 @@
-/home/runner/work/ContextPort/ContextPort/.github/deepseek-provider-patch.py:74: SyntaxWarning: invalid escape sequence '\.'
-  '''        let storedEnabled = defaults.stringArray(forKey: Self.enabledProvidersKey) ?? []
-/home/runner/work/ContextPort/ContextPort/.github/deepseek-provider-patch.py:137: SyntaxWarning: invalid escape sequence '\('
-  '''        case .invalidConversationStructure:
-ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift: expected one replacement anchor, found 0
-DeepSeek tail patch applied and full source marker validation passed.
