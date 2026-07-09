@@ -6,6 +6,7 @@ on:
       - codex/add-deepseek-provider
     paths:
       - ".github/deepseek-provider-patch.py"
+      - ".github/deepseek-provider-patch.trigger"
 
 permissions:
   contents: write
@@ -26,12 +27,14 @@ jobs:
       - name: Remove temporary patch helpers
         run: |
           rm .github/deepseek-provider-patch.py
+          rm .github/deepseek-provider-patch.trigger
           rm .github/workflows/apply-deepseek-provider-patch.yml
 
       - name: Validate final diff
         run: |
           git diff --check
           test ! -e .github/deepseek-provider-patch.py
+          test ! -e .github/deepseek-provider-patch.trigger
           test ! -e .github/workflows/apply-deepseek-provider-patch.yml
 
       - name: Commit patched source
