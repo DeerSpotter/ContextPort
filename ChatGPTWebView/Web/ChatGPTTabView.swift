@@ -289,35 +289,26 @@ struct AIChatTabView: View {
     }
 
     private func attachPendingFiles(_ urls: [URL]) {
-        guard !isAttachingFiles else { return }
+        guard !isAttachingFiles, !urls.isEmpty else { return }
+
+        // Attach Files is a one-pass temporary action. Clear its UI state immediately
+        // when pressed so the primary control returns to Save Context regardless of
+        // provider-specific upload acknowledgement behavior.
         isAttachingFiles = true
+        pendingAttachFileURLs = []
         webViewStore.preparePendingUploadURLs(urls)
+        isAttachingFiles = false
+        appModel.statusMessage = "Attachment handoff started for \(provider.displayName). Save Context is available again."
 
         Task { @MainActor in
-            defer { isAttachingFiles = false }
             let handoff = await webViewStore.injectFilesIntoChatGPTUpload(urls)
+            webViewStore.preparePendingUploadURLs([])
 
-            pendingAttachFileURLs = handoff.failedURLs
-            webViewStore.preparePendingUploadURLs(handoff.failedURLs)
-
-            let unsupportedNames = handoff.unsupportedURLs.map(\.lastPathComponent)
-            let unsupportedLabel = unsupportedNames.joined(separator: ", ")
-
-            if handoff.failedURLs.isEmpty {
-                if handoff.unsupportedURLs.isEmpty {
-                    appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
-                } else if handoff.attachedURLs.isEmpty {
-                    appModel.statusMessage = "Skipped unsupported \(provider.displayName) attachment\(handoff.unsupportedURLs.count == 1 ? "" : "s"): \(unsupportedLabel)."
-                } else {
-                    appModel.statusMessage = "Context attached to \(provider.displayName). Skipped unsupported attachment\(handoff.unsupportedURLs.count == 1 ? "" : "s"): \(unsupportedLabel)."
-                }
+            if handoff.unsupportedURLs.isEmpty && handoff.failedURLs.isEmpty {
+                appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
             } else {
-                let completedCount = handoff.attachedURLs.count + handoff.unsupportedURLs.count
-                if completedCount > 0 {
-                    appModel.statusMessage = "Processed \(completedCount) attachment\(completedCount == 1 ? "" : "s") for \(provider.displayName). \(handoff.failedURLs.count) file\(handoff.failedURLs.count == 1 ? " is" : "s are") still ready; tap Attach Files to retry."
-                } else {
-                    appModel.statusMessage = "Context bundle could not be attached in \(provider.displayName). The files are still ready; tap Attach Files to retry."
-                }
+                let attemptedCount = urls.count
+                appModel.statusMessage = "Attempted \(attemptedCount) Memory attachment\(attemptedCount == 1 ? "" : "s") for \(provider.displayName). Save Context is available."
             }
         }
     }
