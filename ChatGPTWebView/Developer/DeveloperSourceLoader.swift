@@ -72,6 +72,7 @@ private func loadExternalDeveloperSource(
           let url = URL(string: urlString),
           let scheme = url.scheme?.lowercased(),
           scheme == "http" || scheme == "https" else {
+        await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
         return DeveloperSourceFile(
             id: sourceID,
             sessionTitle: sessionTitle,
@@ -101,9 +102,22 @@ private func loadExternalDeveloperSource(
         let (data, response) = try await URLSession.shared.data(for: request)
         let maximumSourceBytes = 24 * 1024 * 1024
 
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            throw DeveloperSourceLoadError.httpStatus(httpResponse.statusCode)
+        if let httpResponse = response as? HTTPURLResponse {
+            let sourceMapReferences = [
+                httpResponse.value(forHTTPHeaderField: "SourceMap"),
+                httpResponse.value(forHTTPHeaderField: "X-SourceMap")
+            ].compactMap { $0 }
+
+            await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences(
+                sourceMapReferences,
+                for: sourceID
+            )
+
+            if !(200...299).contains(httpResponse.statusCode) {
+                throw DeveloperSourceLoadError.httpStatus(httpResponse.statusCode)
+            }
+        } else {
+            await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
         }
 
         guard data.count <= maximumSourceBytes else {
@@ -143,6 +157,7 @@ private func loadExternalDeveloperSource(
             loadError: nil
         )
     } catch {
+        await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
         return DeveloperSourceFile(
             id: sourceID,
             sessionTitle: sessionTitle,
