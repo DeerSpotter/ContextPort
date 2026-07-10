@@ -450,15 +450,48 @@ final class ChatConversationExporter {
               )
             };
           };
-          const extractDeepSeek = () => ({
-            turns: [],
-            error: 'provider-capture-required',
-            diagnostics: diagnostics(
-              'deepseek-source-capture-required',
-              ['deepseek-positive-role-evidence'],
-              []
-            )
-          });
+          const extractDeepSeek = () => {
+            const rowSelector = '[data-virtual-list-item-key]';
+            const userWrapperSelector = '.ds-message.d29f3d7d';
+            const userBodySelector = '.fbb737a4';
+            const assistantBodySelector = '.ds-assistant-message-main-content';
+            const rows = topLevel(all(document, rowSelector));
+            const userBodies = topLevel(all(document, `${rowSelector} ${userWrapperSelector} ${userBodySelector}`));
+            const assistantBodies = topLevel(all(document, `${rowSelector} ${assistantBodySelector}`));
+            const expectedCanaries = ['virtual-list-item-key','deepseek-user-renderer','deepseek-assistant-content'];
+            const matchedCanaries = [];
+            if (rows.length > 0) matchedCanaries.push('virtual-list-item-key');
+            if (userBodies.length > 0) matchedCanaries.push('deepseek-user-renderer');
+            if (assistantBodies.length > 0) matchedCanaries.push('deepseek-assistant-content');
+
+            const turns = [], seen = new Set();
+            let unclassified = 0;
+            rows.forEach(row => {
+              const rowUserBodies = topLevel(all(row, `${userWrapperSelector} ${userBodySelector}`));
+              const rowAssistantBodies = topLevel(all(row, assistantBodySelector));
+              if (rowUserBodies.length > 0 && rowAssistantBodies.length === 0) {
+                const content = rowUserBodies.map(serialize).filter(Boolean).join('\n\n');
+                pushTurn(turns, seen, 'user', content);
+                return;
+              }
+              if (rowAssistantBodies.length > 0 && rowUserBodies.length === 0) {
+                const content = rowAssistantBodies.map(serialize).filter(Boolean).join('\n\n');
+                pushTurn(turns, seen, 'assistant', content);
+                return;
+              }
+              if (topLevel(all(row, '.ds-message')).length > 0 || text(row).length >= 5) unclassified += 1;
+            });
+            return {
+              turns,
+              diagnostics: diagnostics(
+                'deepseek-virtual-row-role-renderers',
+                expectedCanaries,
+                matchedCanaries,
+                false,
+                unclassified
+              )
+            };
+          };
           const extractGemini = () => {
             const turns = [], seen = new Set();
             const userSelector = 'user-query,[data-message-author-role="user"],[data-test-id="user-query"],[data-testid="user-query"]';
