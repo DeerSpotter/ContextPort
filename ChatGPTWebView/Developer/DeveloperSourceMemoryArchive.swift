@@ -9,7 +9,19 @@ struct DeveloperSourceArchiveItem: Sendable {
     let urlString: String?
     let kind: String
     let content: String?
+    let metadataNote: String?
+    let resourceByteCount: Int?
     let loadError: String?
+
+    var resourceState: String {
+        if content != nil { return "indexed_text" }
+        if loadError != nil { return "load_error" }
+        return "metadata_only"
+    }
+
+    var byteCount: Int {
+        content?.utf8.count ?? resourceByteCount ?? 0
+    }
 }
 
 enum DeveloperSourceMemoryArchiveError: LocalizedError {
@@ -57,8 +69,9 @@ final class DeveloperSourceMemoryArchiveBuilder {
         let generatedAt = Date()
         let archiveURL = try buildArchive(items: items, generatedAt: generatedAt)
         let sessionCount = Set(items.map(\.sessionTitle)).count
-        let loadedCount = items.filter { $0.content != nil }.count
-        let failedCount = items.count - loadedCount
+        let loadedCount = items.filter { $0.resourceState == "indexed_text" }.count
+        let metadataOnlyCount = items.filter { $0.resourceState == "metadata_only" }.count
+        let failedCount = items.filter { $0.resourceState == "load_error" }.count
         let totalBytes = items.reduce(0) { partial, item in
             partial + (item.content?.utf8.count ?? 0)
         }
@@ -69,6 +82,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
             generatedAt: generatedAt,
             sessionCount: sessionCount,
             loadedCount: loadedCount,
+            metadataOnlyCount: metadataOnlyCount,
             failedCount: failedCount,
             totalBytes: totalBytes,
             fingerprint: fingerprint
@@ -127,6 +141,9 @@ final class DeveloperSourceMemoryArchiveBuilder {
             update(&hasher, value: item.displayName)
             update(&hasher, value: item.urlString)
             update(&hasher, value: item.kind)
+            update(&hasher, value: item.resourceState)
+            update(&hasher, value: item.metadataNote)
+            update(&hasher, value: item.resourceByteCount.map(String.init))
             update(&hasher, value: item.loadError)
 
             if let content = item.content {
@@ -246,15 +263,17 @@ final class DeveloperSourceMemoryArchiveBuilder {
                     displayName: item.displayName,
                     sourceURL: item.urlString,
                     kind: item.kind,
-                    byteCount: item.content?.utf8.count ?? 0,
+                    state: item.resourceState,
+                    byteCount: item.byteCount,
                     archivePath: archivePath,
+                    metadataNote: item.metadataNote,
                     loadError: item.loadError
                 )
             )
         }
 
         let manifest = DeveloperSourceArchiveManifest(
-            formatVersion: 1,
+            formatVersion: 2,
             generatedAt: generatedAt,
             sourceCount: items.count,
             sessionCount: Set(items.map(\.sessionTitle)).count,
@@ -274,10 +293,12 @@ final class DeveloperSourceMemoryArchiveBuilder {
         Sessions represented: \(Set(items.map(\.sessionTitle)).count)
 
         Open manifest.json first. It maps every discovered source to its provider/profile session,
-        page URL, source URL, source type, byte count, load error, and path inside this ZIP.
+        page URL, source URL, source type, explicit state, byte count, metadata note, load error,
+        and path inside this ZIP.
 
         Sources contains the complete retained source text that ContextPort successfully indexed.
-        Failed or unavailable source loads remain documented in manifest.json even when no source file exists.
+        Metadata-only binary resources and true load errors remain documented separately in manifest.json
+        even when no source text file exists.
         """
         try writer.add(
             data: Data(readme.utf8),
@@ -312,6 +333,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
         generatedAt: Date,
         sessionCount: Int,
         loadedCount: Int,
+        metadataOnlyCount: Int,
         failedCount: Int,
         totalBytes: Int,
         fingerprint: String
@@ -336,6 +358,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
 
         - Sources discovered: \(items.count)
         - Sources with indexed text: \(loadedCount)
+        - Metadata-only binary resources: \(metadataOnlyCount)
         - Sources with load errors: \(failedCount)
         - Browser sessions: \(sessionCount)
         - Indexed source text: \(size)
@@ -438,8 +461,10 @@ private struct DeveloperSourceArchiveManifestEntry: Codable {
     let displayName: String
     let sourceURL: String?
     let kind: String
+    let state: String
     let byteCount: Int
     let archivePath: String?
+    let metadataNote: String?
     let loadError: String?
 }
 
