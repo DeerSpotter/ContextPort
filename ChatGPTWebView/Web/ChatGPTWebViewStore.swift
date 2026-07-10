@@ -81,7 +81,7 @@ final class ChatGPTWebViewStore: ObservableObject {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = profile.kind == .primary ? .default() : .nonPersistent()
         configuration.allowsInlineMediaPlayback = true
-        if provider.id == .claude || provider.id == .grok {
+        if provider.id == .claude || provider.id == .grok || provider.id == .deepSeek {
             configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         }
 

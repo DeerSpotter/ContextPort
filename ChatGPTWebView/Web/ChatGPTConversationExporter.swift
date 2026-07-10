@@ -18,6 +18,7 @@ enum ChatConversationExportError: LocalizedError {
     case securityInterstitialDetected
     case noMessagesFound
     case invalidConversationStructure
+    case providerCaptureRequired(String)
     case providerUIChanged(String)
     case cannotCreatePDF
 
@@ -33,6 +34,8 @@ enum ChatConversationExportError: LocalizedError {
             return "No positively identified conversation messages were found. The AI page may have changed or may not be a conversation."
         case .invalidConversationStructure:
             return "ContextPort found conversation content but could not verify both a user turn and an AI response. Nothing was saved."
+        case .providerCaptureRequired(let providerName):
+            return "Save Context for \(providerName) is intentionally disabled until ContextPort captures and verifies that provider's real conversation UI markers. Enable Developer Mode, open a short \(providerName) conversation, then save the loaded Sources to Memory for selector review."
         case .providerUIChanged(let message):
             return message
         case .cannotCreatePDF:
@@ -92,6 +95,10 @@ final class ChatConversationExporter {
         }
 
         let payload = try JSONDecoder().decode(ChatConversationExportPayload.self, from: data)
+        if payload.error == "provider-capture-required" {
+            throw ChatConversationExportError.providerCaptureRequired(provider.displayName)
+        }
+
         let turns = payload.turns.compactMap(validateTurn)
         let userTurnCount = turns.filter { $0.role == .user }.count
         let assistantTurnCount = turns.filter { $0.role == .assistant }.count
@@ -443,6 +450,15 @@ final class ChatConversationExporter {
               )
             };
           };
+          const extractDeepSeek = () => ({
+            turns: [],
+            error: 'provider-capture-required',
+            diagnostics: diagnostics(
+              'deepseek-source-capture-required',
+              ['deepseek-positive-role-evidence'],
+              []
+            )
+          });
           const extractGemini = () => {
             const turns = [], seen = new Set();
             const userSelector = 'user-query,[data-message-author-role="user"],[data-test-id="user-query"],[data-testid="user-query"]';
@@ -476,7 +492,8 @@ final class ChatConversationExporter {
             chatgpt: extractChatGPT,
             claude: extractClaude,
             gemini: extractGemini,
-            grok: extractGrok
+            grok: extractGrok,
+            deepseek: extractDeepSeek
           }[providerID];
           const extraction = extractor
             ? extractor()
@@ -486,7 +503,9 @@ final class ChatConversationExporter {
           const source = window.location.href || providerStartURL;
           const pageHasInterstitial = isInterstitial(document.documentElement?.innerHTML || '') || isInterstitial(text(document.body));
           const blockingChallengeDetected = turns.length === 0 && pageHasInterstitial;
-          const error = blockingChallengeDetected ? 'security-interstitial' : null;
+          const error = blockingChallengeDetected
+            ? 'security-interstitial'
+            : (extraction.error || null);
           extraction.diagnostics.challengeDetected = blockingChallengeDetected;
           return JSON.stringify({
             title,

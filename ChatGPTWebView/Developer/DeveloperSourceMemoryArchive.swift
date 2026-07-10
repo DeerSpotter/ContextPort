@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct DeveloperSourceArchiveItem: Sendable {
@@ -44,11 +45,15 @@ final class DeveloperSourceMemoryArchiveBuilder {
         self.encoder = encoder
     }
 
+    private static let fingerprintTagPrefix = "source-fingerprint:"
+
     func saveToMemory(items: [DeveloperSourceArchiveItem]) throws -> LocalMemorySaveResult {
         guard !items.isEmpty else {
             throw DeveloperSourceMemoryArchiveError.noSources
         }
 
+        let fingerprint = Self.fingerprint(for: items)
+        let fingerprintTag = Self.fingerprintTagPrefix + fingerprint
         let generatedAt = Date()
         let archiveURL = try buildArchive(items: items, generatedAt: generatedAt)
         let sessionCount = Set(items.map(\.sessionTitle)).count
@@ -65,34 +70,105 @@ final class DeveloperSourceMemoryArchiveBuilder {
             sessionCount: sessionCount,
             loadedCount: loadedCount,
             failedCount: failedCount,
-            totalBytes: totalBytes
+            totalBytes: totalBytes,
+            fingerprint: fingerprint
         )
 
         let store = LocalMemoryStore(fileManager: fileManager)
+        let existingEntries = try store.loadEntries()
+        if let existing = existingEntries.first(where: {
+            $0.source == "contextport_dev_sources" && $0.tags.contains(fingerprintTag)
+        }) {
+            try installArchive(archiveURL, for: existing)
+            return LocalMemorySaveResult(
+                entry: existing,
+                totalCount: existingEntries.count,
+                message: "These retained sources are already in Memory. Refreshed the existing Developer Sources ZIP."
+            )
+        }
+
         let saved = try store.saveEntry(
             projectName: "Developer Sources",
             title: title,
             content: summary,
             source: "contextport_dev_sources",
-            tags: ["developer", "sources", "webview", "ai-debug", "zip"],
+            tags: ["developer", "sources", "webview", "ai-debug", "zip", fingerprintTag],
             importance: 5
         )
 
-        let destination = Self.archiveURL(for: saved.entry, fileManager: fileManager)
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
+        do {
+            try installArchive(archiveURL, for: saved.entry)
+        } catch {
+            try? store.deleteEntry(saved.entry)
+            try? fileManager.removeItem(at: archiveURL)
+            throw error
         }
-        try fileManager.moveItem(at: archiveURL, to: destination)
 
         return LocalMemorySaveResult(
             entry: saved.entry,
             totalCount: saved.totalCount,
             message: "Saved \(items.count) retained sources to Memory as one ZIP."
         )
+    }
+
+    static func fingerprint(for items: [DeveloperSourceArchiveItem]) -> String {
+        var hasher = SHA256()
+        let sortedItems = items.sorted {
+            if $0.id == $1.id {
+                return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+            return $0.id < $1.id
+        }
+
+        for item in sortedItems {
+            update(&hasher, value: item.id)
+            update(&hasher, value: item.sessionTitle)
+            update(&hasher, value: item.pageURL)
+            update(&hasher, value: item.displayName)
+            update(&hasher, value: item.urlString)
+            update(&hasher, value: item.kind)
+            update(&hasher, value: item.loadError)
+
+            if let content = item.content {
+                hasher.update(data: Data([1]))
+                let contentDigest = SHA256.hash(data: Data(content.utf8))
+                hasher.update(data: Data(contentDigest))
+            } else {
+                hasher.update(data: Data([0]))
+            }
+            hasher.update(data: Data([0x1E]))
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func update(_ hasher: inout SHA256, value: String?) {
+        if let value {
+            hasher.update(data: Data([1]))
+            hasher.update(data: Data(value.utf8))
+        } else {
+            hasher.update(data: Data([0]))
+        }
+        hasher.update(data: Data([0x1F]))
+    }
+
+    private func installArchive(_ archiveURL: URL, for entry: LocalMemoryEntry) throws {
+        let destination = Self.archiveURL(for: entry, fileManager: fileManager)
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(
+                destination,
+                withItemAt: archiveURL,
+                backupItemName: nil,
+                options: []
+            )
+        } else {
+            try fileManager.moveItem(at: archiveURL, to: destination)
+        }
     }
 
     static func archiveURL(
@@ -237,7 +313,8 @@ final class DeveloperSourceMemoryArchiveBuilder {
         sessionCount: Int,
         loadedCount: Int,
         failedCount: Int,
-        totalBytes: Int
+        totalBytes: Int,
+        fingerprint: String
     ) -> String {
         let sessions = Array(Set(items.map(\.sessionTitle)).sorted())
         let sourceKinds = Dictionary(grouping: items, by: \.kind)
@@ -262,6 +339,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
         - Sources with load errors: \(failedCount)
         - Browser sessions: \(sessionCount)
         - Indexed source text: \(size)
+        - Capture fingerprint: \(fingerprint)
 
         ## Sessions
 
@@ -273,7 +351,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
 
         ## Analysis Note
 
-        Share the attached `ContextPort Loaded Sources.zip` when investigating ChatGPT, Claude, Gemini, or Grok frontend behavior. Start with `manifest.json` to map source files back to the provider session and source URL.
+        Share the attached `ContextPort Loaded Sources.zip` when investigating ChatGPT, Claude, Gemini, Grok, or DeepSeek frontend behavior. Start with `manifest.json` to map source files back to the provider session and source URL.
         """
     }
 

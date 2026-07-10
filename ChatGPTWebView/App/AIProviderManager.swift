@@ -17,12 +17,23 @@ final class AIProviderManager: ObservableObject {
 
     private static let activeProviderKey = "MultiAIActiveProviderID"
     private static let enabledProvidersKey = "MultiAIEnabledProviderIDs"
+    private static let deepSeekProviderMigrationKey = "MultiAIDeepSeekProviderMigrationV1"
 
     init() {
         let defaults = UserDefaults.standard
         let storedEnabled = defaults.stringArray(forKey: Self.enabledProvidersKey) ?? []
         let decodedEnabled = Set(storedEnabled.compactMap(AIProviderID.init(rawValue:)))
-        let enabledIDs = decodedEnabled.isEmpty ? Set(AIProviderID.allCases) : decodedEnabled
+        var enabledIDs = decodedEnabled.isEmpty ? Set(AIProviderID.allCases) : decodedEnabled
+
+        if !defaults.bool(forKey: Self.deepSeekProviderMigrationKey) {
+            let legacyAllProviders: Set<AIProviderID> = [.chatGPT, .claude, .gemini, .grok]
+            if decodedEnabled.isEmpty || decodedEnabled == legacyAllProviders {
+                enabledIDs.insert(.deepSeek)
+            }
+            defaults.set(true, forKey: Self.deepSeekProviderMigrationKey)
+            defaults.set(enabledIDs.map(\.rawValue).sorted(), forKey: Self.enabledProvidersKey)
+        }
+
         self.enabledProviderIDs = enabledIDs
 
         if let rawValue = defaults.string(forKey: Self.activeProviderKey),

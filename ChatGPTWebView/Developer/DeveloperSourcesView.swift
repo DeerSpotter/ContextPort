@@ -54,6 +54,7 @@ private final class DeveloperSourcesModel: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var isSearching = false
     @Published private(set) var status = "Open the Dev tab to inspect loaded source files."
+    @Published private(set) var snapshotFingerprint: String?
 
     private var sources: [DeveloperSourceFile] = []
     private var scanTask: Task<Void, Never>?
@@ -89,6 +90,7 @@ private final class DeveloperSourcesModel: ObservableObject {
         searchTask?.cancel()
         sources.removeAll(keepingCapacity: false)
         results.removeAll(keepingCapacity: false)
+        snapshotFingerprint = nil
         isSearching = false
 
         guard !sessions.isEmpty else {
@@ -164,6 +166,9 @@ private final class DeveloperSourcesModel: ObservableObject {
                 }
                 return $0.sessionTitle.localizedCaseInsensitiveCompare($1.sessionTitle) == .orderedAscending
             }
+            self.snapshotFingerprint = DeveloperSourceMemoryArchiveBuilder.fingerprint(
+                for: self.archiveSnapshot()
+            )
             self.isScanning = false
             self.status = "Indexed \(self.sources.count) sources from \(scannedSessionCount) loaded session\(scannedSessionCount == 1 ? "" : "s"). Kept until ContextPort closes."
             self.scheduleSearch(self.currentQuery)
@@ -519,6 +524,7 @@ struct DeveloperSourcesView: View {
     @StateObject private var model = DeveloperSourcesModel()
     @State private var searchText = ""
     @State private var isSavingToMemory = false
+    @State private var lastSavedSnapshotFingerprint: String?
 
     var body: some View {
         NavigationStack {
@@ -544,9 +550,17 @@ struct DeveloperSourcesView: View {
                     Button {
                         saveSourcesToMemory()
                     } label: {
-                        Label("Save Sources to Memory", systemImage: "archivebox.fill")
+                        Label(
+                            isCurrentSnapshotSaved ? "Saved to Memory" : "Save Sources to Memory",
+                            systemImage: isCurrentSnapshotSaved ? "checkmark.circle.fill" : "archivebox.fill"
+                        )
                     }
-                    .disabled(!model.hasSources || model.isScanning || isSavingToMemory)
+                    .disabled(
+                        !model.hasSources
+                        || model.isScanning
+                        || isSavingToMemory
+                        || isCurrentSnapshotSaved
+                    )
                 } header: {
                     Text("Source Inspector")
                 } footer: {
@@ -589,10 +603,21 @@ struct DeveloperSourcesView: View {
         }
     }
 
+    private var isCurrentSnapshotSaved: Bool {
+        guard let current = model.snapshotFingerprint,
+              let lastSavedSnapshotFingerprint else {
+            return false
+        }
+        return current == lastSavedSnapshotFingerprint
+    }
+
     private func saveSourcesToMemory() {
         guard !isSavingToMemory else { return }
         let snapshot = model.archiveSnapshot()
         guard !snapshot.isEmpty else { return }
+
+        let snapshotFingerprint = model.snapshotFingerprint
+            ?? DeveloperSourceMemoryArchiveBuilder.fingerprint(for: snapshot)
 
         isSavingToMemory = true
         appModel.statusMessage = "Packaging \(snapshot.count) retained sources into one Memory ZIP..."
@@ -604,9 +629,11 @@ struct DeveloperSourcesView: View {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try DeveloperSourceMemoryArchiveBuilder().saveToMemory(items: snapshot)
                 }.value
+                lastSavedSnapshotFingerprint = snapshotFingerprint
                 appModel.reloadLocalMemory()
                 appModel.statusMessage = result.message
             } catch {
+                appModel.reloadLocalMemory()
                 appModel.statusMessage = "Developer source ZIP save failed: \(error.localizedDescription)"
             }
         }

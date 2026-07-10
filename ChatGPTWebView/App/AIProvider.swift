@@ -5,6 +5,7 @@ enum AIProviderID: String, CaseIterable, Codable, Hashable, Identifiable {
     case claude
     case gemini
     case grok
+    case deepSeek = "deepseek"
 
     var id: String { rawValue }
 
@@ -160,6 +161,26 @@ struct AIProvider: Identifiable, Hashable {
             ],
             authenticatedHostSuffixes: ["grok.com"],
             unauthenticatedPathPrefixes: ["/login", "/signin", "/sign-in", "/auth"]
+        ),
+        .deepSeek: AIProvider(
+            id: .deepSeek,
+            displayName: "DeepSeek",
+            systemImage: "brain.head.profile",
+            startURL: URL(string: "https://chat.deepseek.com/")!,
+            loginURL: URL(string: "https://chat.deepseek.com/sign_in")!,
+            allowedHostSuffixes: [
+                "deepseek.com",
+                "google.com",
+                "gstatic.com",
+                "googleusercontent.com",
+                "apple.com",
+                "icloud.com",
+                "awswaf.com",
+                "amazonaws.com"
+            ],
+            persistentCookieHostSuffixes: ["deepseek.com"],
+            authenticatedHostSuffixes: ["chat.deepseek.com"],
+            unauthenticatedPathPrefixes: ["/sign_in", "/signin", "/login", "/auth"]
         )
     ]
 }

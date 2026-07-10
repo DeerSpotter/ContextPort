@@ -500,6 +500,11 @@ extension ChatGPTWebViewStore {
                     "main"
                 ]
             )
+        case .deepSeek:
+            return ChatPerformanceDOMConfiguration(
+                messageSelectors: [],
+                scrollSelectors: []
+            )
         }
     }
 

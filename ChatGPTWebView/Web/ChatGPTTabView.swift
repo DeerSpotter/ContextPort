@@ -295,16 +295,29 @@ struct AIChatTabView: View {
 
         Task { @MainActor in
             defer { isAttachingFiles = false }
-            let memoryAttachWorked = await webViewStore.injectFilesIntoChatGPTUpload(urls)
+            let handoff = await webViewStore.injectFilesIntoChatGPTUpload(urls)
 
-            if memoryAttachWorked {
-                pendingAttachFileURLs = []
-                webViewStore.preparePendingUploadURLs([])
-                appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
+            pendingAttachFileURLs = handoff.failedURLs
+            webViewStore.preparePendingUploadURLs(handoff.failedURLs)
+
+            let unsupportedNames = handoff.unsupportedURLs.map(\.lastPathComponent)
+            let unsupportedLabel = unsupportedNames.joined(separator: ", ")
+
+            if handoff.failedURLs.isEmpty {
+                if handoff.unsupportedURLs.isEmpty {
+                    appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
+                } else if handoff.attachedURLs.isEmpty {
+                    appModel.statusMessage = "Skipped unsupported \(provider.displayName) attachment\(handoff.unsupportedURLs.count == 1 ? "" : "s"): \(unsupportedLabel)."
+                } else {
+                    appModel.statusMessage = "Context attached to \(provider.displayName). Skipped unsupported attachment\(handoff.unsupportedURLs.count == 1 ? "" : "s"): \(unsupportedLabel)."
+                }
             } else {
-                pendingAttachFileURLs = urls
-                webViewStore.preparePendingUploadURLs(urls)
-                appModel.statusMessage = "Context bundle could not be attached in \(provider.displayName). The files are still ready; tap Attach Files to retry."
+                let completedCount = handoff.attachedURLs.count + handoff.unsupportedURLs.count
+                if completedCount > 0 {
+                    appModel.statusMessage = "Processed \(completedCount) attachment\(completedCount == 1 ? "" : "s") for \(provider.displayName). \(handoff.failedURLs.count) file\(handoff.failedURLs.count == 1 ? " is" : "s are") still ready; tap Attach Files to retry."
+                } else {
+                    appModel.statusMessage = "Context bundle could not be attached in \(provider.displayName). The files are still ready; tap Attach Files to retry."
+                }
             }
         }
     }

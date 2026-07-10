@@ -411,9 +411,14 @@ private struct SettingsView: View {
                                     Text("Experimental")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
+                                } else if provider.id == .deepSeek {
+                                    Text("Capture Required")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
                                 }
                             }
                         }
+                        .disabled(provider.id == .deepSeek)
                     }
 
                     Divider()

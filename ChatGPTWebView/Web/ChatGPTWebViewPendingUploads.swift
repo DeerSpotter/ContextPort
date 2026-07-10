@@ -2,6 +2,16 @@ import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
+struct ChatAttachmentHandoffResult: Sendable {
+    let attachedURLs: [URL]
+    let unsupportedURLs: [URL]
+    let failedURLs: [URL]
+
+    var completedWithoutRetry: Bool {
+        failedURLs.isEmpty
+    }
+}
+
 private final class WebViewOpenPanelDelegate: NSObject, UIDocumentPickerDelegate {
     private let completion: ([URL]?) -> Void
 
@@ -240,16 +250,36 @@ extension ChatGPTWebViewStore {
         return (value as? Bool) == true
     }
 
-    func injectFilesIntoChatGPTUpload(_ urls: [URL]) async -> Bool {
+    func injectFilesIntoChatGPTUpload(_ urls: [URL]) async -> ChatAttachmentHandoffResult {
         struct FileDescriptor {
             let id: String
             let name: String
             let mime: String
+            let url: URL
+        }
+
+        struct AttachmentBridgeResult: Decodable {
+            let attachedIDs: [String]
+            let unsupportedIDs: [String]
+            let failedIDs: [String]
         }
 
         let uploadChunkSize = 384 * 1024
-        let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
-        guard !existingURLs.isEmpty else { return false }
+        let fileManager = FileManager.default
+        let existingURLs = urls.filter { fileManager.fileExists(atPath: $0.path) }
+        let missingURLs = urls.filter { !fileManager.fileExists(atPath: $0.path) }
+
+        func failedResult(_ failedURLs: [URL] = urls) -> ChatAttachmentHandoffResult {
+            ChatAttachmentHandoffResult(
+                attachedURLs: [],
+                unsupportedURLs: [],
+                failedURLs: failedURLs
+            )
+        }
+
+        guard !existingURLs.isEmpty else {
+            return failedResult()
+        }
 
         func evaluateBool(_ script: String) async -> Bool {
             let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
@@ -262,6 +292,19 @@ extension ChatGPTWebViewStore {
                 }
             }
             return (value as? Bool) == true
+        }
+
+        func evaluateString(_ script: String) async -> String? {
+            let value = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Any?, Error>) in
+                webView.evaluateJavaScript(script) { value, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: value)
+                    }
+                }
+            }
+            return value as? String
         }
 
         func jsonObject(_ object: [String: String]) -> String? {
@@ -286,13 +329,17 @@ extension ChatGPTWebViewStore {
           return true;
         })();
         """#)
-        guard initialized else { return false }
+        guard initialized else {
+            return failedResult()
+        }
 
+        var descriptors: [FileDescriptor] = []
         for url in existingURLs {
             let descriptor = FileDescriptor(
                 id: UUID().uuidString,
                 name: url.lastPathComponent,
-                mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+                mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream",
+                url: url
             )
 
             guard let descriptorJSON = jsonObject([
@@ -301,7 +348,7 @@ extension ChatGPTWebViewStore {
                 "mime": descriptor.mime
             ]) else {
                 await cleanupUploadBridge()
-                return false
+                return failedResult()
             }
 
             let registered = await evaluateBool("""
@@ -315,12 +362,12 @@ extension ChatGPTWebViewStore {
             """)
             guard registered else {
                 await cleanupUploadBridge()
-                return false
+                return failedResult()
             }
 
             guard let handle = try? FileHandle(forReadingFrom: url) else {
                 await cleanupUploadBridge()
-                return false
+                return failedResult()
             }
 
             var fileReadSucceeded = true
@@ -353,14 +400,22 @@ extension ChatGPTWebViewStore {
 
             guard fileReadSucceeded else {
                 await cleanupUploadBridge()
-                return false
+                return failedResult()
             }
+            descriptors.append(descriptor)
         }
 
         let attachScript = #"""
         (async () => {
           const bridge = window.__contextPortUploadBridge;
-          if (!bridge || !Array.isArray(bridge.files) || bridge.files.length === 0) return false;
+          const emptyResult = {
+            attachedIDs: [],
+            unsupportedIDs: [],
+            failedIDs: []
+          };
+          if (!bridge || !Array.isArray(bridge.files) || bridge.files.length === 0) {
+            return JSON.stringify(emptyResult);
+          }
 
           const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -425,20 +480,79 @@ extension ChatGPTWebViewStore {
             }
           };
 
-          const files = bridge.files.map((record) => new File(
-            record.parts,
-            record.name,
-            { type: record.mime || 'application/octet-stream' }
-          ));
+          const pairs = bridge.files.map((record) => ({
+            record,
+            file: new File(
+              record.parts,
+              record.name,
+              { type: record.mime || 'application/octet-stream' }
+            )
+          }));
+
+          const composer = findComposer();
+          if (composer) tapLikeUser(composer);
+          await wait(200);
+
+          const input = Array.from(document.querySelectorAll('input[type="file"]')).reverse()[0];
+
+          const acceptsFile = (candidateInput, file) => {
+            const rawAccept = String(candidateInput?.getAttribute('accept') || '').trim().toLowerCase();
+            if (!rawAccept) return true;
+
+            const tokens = rawAccept
+              .split(',')
+              .map((token) => token.trim())
+              .filter(Boolean);
+            if (!tokens.length) return true;
+
+            const lowerName = String(file.name || '').toLowerCase();
+            const dotIndex = lowerName.lastIndexOf('.');
+            const extension = dotIndex >= 0 ? lowerName.slice(dotIndex) : '';
+            const mime = String(file.type || '').toLowerCase();
+
+            return tokens.some((token) => {
+              if (token.startsWith('.')) return token === extension;
+              if (token.endsWith('/*')) return mime.startsWith(token.slice(0, -1));
+              return mime === token;
+            });
+          };
+
+          const supportedPairs = input
+            ? pairs.filter(({ file }) => acceptsFile(input, file))
+            : pairs;
+          const unsupportedIDs = input
+            ? pairs.filter(({ file }) => !acceptsFile(input, file)).map(({ record }) => record.id)
+            : [];
+
+          if (!supportedPairs.length) {
+            return JSON.stringify({
+              attachedIDs: [],
+              unsupportedIDs,
+              failedIDs: []
+            });
+          }
 
           let transfer = null;
           try { transfer = new DataTransfer(); } catch (_) {}
           if (!transfer) {
             try { transfer = new ClipboardEvent('paste').clipboardData; } catch (_) {}
           }
-          if (!transfer) return false;
-          for (const file of files) transfer.items.add(file);
-          if (!transfer.files || transfer.files.length === 0) return false;
+          if (!transfer) {
+            return JSON.stringify({
+              attachedIDs: [],
+              unsupportedIDs,
+              failedIDs: supportedPairs.map(({ record }) => record.id)
+            });
+          }
+
+          for (const { file } of supportedPairs) transfer.items.add(file);
+          if (!transfer.files || transfer.files.length === 0) {
+            return JSON.stringify({
+              attachedIDs: [],
+              unsupportedIDs,
+              failedIDs: supportedPairs.map(({ record }) => record.id)
+            });
+          }
 
           const attachmentVisible = () => {
             const attachmentHints = Array.from(document.querySelectorAll('[data-testid], [aria-label], [data-filename], [title], [alt], a, button, div, span'))
@@ -456,16 +570,17 @@ extension ChatGPTWebViewStore {
               .join(' ')
               .toLowerCase();
             const attachmentHTML = String(document.documentElement?.innerHTML || '').toLowerCase();
-            return bridge.files.every((record) => {
+            return supportedPairs.every(({ record }) => {
               const name = record.name.toLowerCase();
               return attachmentHints.includes(name) || attachmentHTML.includes(name);
             });
           };
 
           const fileListMatches = (fileList) => {
+            const expectedFiles = supportedPairs.map(({ file }) => file);
             const actualFiles = Array.from(fileList || []);
-            if (actualFiles.length !== files.length) return false;
-            return files.every((file, index) => {
+            if (actualFiles.length !== expectedFiles.length) return false;
+            return expectedFiles.every((file, index) => {
               const actual = actualFiles[index];
               return actual
                 && actual.name === file.name
@@ -474,31 +589,34 @@ extension ChatGPTWebViewStore {
             });
           };
 
-          const composer = findComposer();
-          if (composer) tapLikeUser(composer);
-          await wait(200);
-
-          const input = Array.from(document.querySelectorAll('input[type="file"]')).reverse()[0];
           if (input) {
             try {
               input.files = transfer.files;
               const browserAcceptedExactFiles = fileListMatches(input.files)
-                && (files.length === 1 || input.multiple);
+                && (supportedPairs.length === 1 || input.multiple);
               input.dispatchEvent(new Event('input', { bubbles: true }));
               input.dispatchEvent(new Event('change', { bubbles: true }));
 
               if (browserAcceptedExactFiles) {
                 closeTransientMenus();
                 await wait(250);
-                return true;
+                return JSON.stringify({
+                  attachedIDs: supportedPairs.map(({ record }) => record.id),
+                  unsupportedIDs,
+                  failedIDs: []
+                });
               }
 
-              for (let attempt = 0; attempt < 12; attempt++) {
+              for (let attempt = 0; attempt < 24; attempt++) {
                 await wait(250);
                 if (attachmentVisible()) {
                   closeTransientMenus();
                   await wait(250);
-                  return true;
+                  return JSON.stringify({
+                    attachedIDs: supportedPairs.map(({ record }) => record.id),
+                    unsupportedIDs,
+                    failedIDs: []
+                  });
                 }
               }
             } catch (_) {}
@@ -522,24 +640,69 @@ extension ChatGPTWebViewStore {
               target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
             } catch (_) {}
 
-            for (let attempt = 0; attempt < 8; attempt++) {
+            for (let attempt = 0; attempt < 24; attempt++) {
               await wait(250);
               if (attachmentVisible()) {
                 closeTransientMenus();
                 await wait(250);
-                return true;
+                return JSON.stringify({
+                  attachedIDs: supportedPairs.map(({ record }) => record.id),
+                  unsupportedIDs,
+                  failedIDs: []
+                });
               }
             }
           }
 
-          return false;
+          return JSON.stringify({
+            attachedIDs: [],
+            unsupportedIDs,
+            failedIDs: supportedPairs.map(({ record }) => record.id)
+          });
         })();
         """#
 
-        let attached = await evaluateBool(attachScript)
+        let rawResult = await evaluateString(attachScript)
         await cleanupUploadBridge()
-        return attached
+
+        guard let rawResult,
+              let resultData = rawResult.data(using: .utf8),
+              let bridgeResult = try? JSONDecoder().decode(AttachmentBridgeResult.self, from: resultData) else {
+            return failedResult()
+        }
+
+        let descriptorURLs = Dictionary(
+            uniqueKeysWithValues: descriptors.map { ($0.id, $0.url) }
+        )
+        let attachedURLs = bridgeResult.attachedIDs.compactMap { descriptorURLs[$0] }
+        let unsupportedURLs = bridgeResult.unsupportedIDs.compactMap { descriptorURLs[$0] }
+        var failedURLs = missingURLs + bridgeResult.failedIDs.compactMap { descriptorURLs[$0] }
+
+        let accountedIDs = Set(
+            bridgeResult.attachedIDs
+            + bridgeResult.unsupportedIDs
+            + bridgeResult.failedIDs
+        )
+        failedURLs.append(contentsOf: descriptors.compactMap {
+            accountedIDs.contains($0.id) ? nil : $0.url
+        })
+
+        func orderedUnique(_ candidates: [URL]) -> [URL] {
+            let candidatePaths = Set(candidates.map { $0.standardizedFileURL.path })
+            var seen = Set<String>()
+            return urls.filter {
+                let path = $0.standardizedFileURL.path
+                return candidatePaths.contains(path) && seen.insert(path).inserted
+            }
+        }
+
+        return ChatAttachmentHandoffResult(
+            attachedURLs: orderedUnique(attachedURLs),
+            unsupportedURLs: orderedUnique(unsupportedURLs),
+            failedURLs: orderedUnique(failedURLs)
+        )
     }
+
 
     private func waitForStableComposerReady() async -> Bool {
         let readinessScript = #"""
