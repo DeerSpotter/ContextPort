@@ -1,0 +1,96 @@
+name: Publish validated ChatGPT hotfix source branch
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-map-performance
+
+permissions:
+  contents: write
+
+jobs:
+  publish-source:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Materialize validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, gzip
+          from pathlib import Path
+          encoded = Path('.github/contextport_hotfix_patch.py.gz.b64').read_text().strip()
+          Path('/tmp/contextport_hotfix_patch.py').write_bytes(gzip.decompress(base64.b64decode(encoded)))
+          PY
+          python3 /tmp/contextport_hotfix_patch.py
+          python3 .github/fix-chatgpt-text-parts.py
+          git diff --check
+
+      - name: Recheck embedded ChatGPT capture script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re
+          source = pathlib.Path('ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift').read_text()
+          match = re.search(r'private static let captureScript = #"""(.*?)"""#', source, re.S)
+          if not match:
+              raise SystemExit('captureScript not found')
+          pathlib.Path('/tmp/map-capture.js').write_text(
+              'async function capture(conversationID) {\n' + match.group(1) + '\n}\nmodule.exports = capture;\n'
+          )
+          PY
+          node --check /tmp/map-capture.js
+
+      - name: Remove staging transport and prove source-only diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/contextport_hotfix_patch.py.gz.b64
+          rm -f .github/fix-chatgpt-text-parts.py
+          rm -f .github/hotfix-diagnostic.txt
+          rm -f .github/workflows/apply-chatgpt-map-performance-hotfix.yml
+          rm -f .github/workflows/apply-chatgpt-hotfix-python-decode.yml
+          rm -f .github/workflows/diagnose-chatgpt-hotfix.yml
+          rm -f .github/workflows/finalize-chatgpt-map-performance-hotfix.yml
+          rm -f .github/workflows/force-finalize-chatgpt-hotfix.yml
+          rm -f .github/workflows/force-finalize-chatgpt-hotfix-ubuntu.yml
+          rm -f .github/workflows/publish-chatgpt-hotfix-source-branch.yml
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected = {
+              'ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift',
+              'ChatGPTWebView/Developer/DeveloperSourcesModel.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationExporter.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift',
+              'project.yml',
+          }
+          actual = set(subprocess.check_output(['git','diff','--name-only','ae271328f1eff79262d4b8095e459239031f0da9'], text=True).splitlines())
+          if actual != expected:
+              raise SystemExit(f'Unexpected source-only diff: {sorted(actual)}')
+          project = Path('project.yml').read_text()
+          if 'MARKETING_VERSION: "2.9.1"' not in project or 'CURRENT_PROJECT_VERSION: "74"' not in project:
+              raise SystemExit('2.9.1 build 74 missing')
+          PY
+
+      - name: Publish clean source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Fix ChatGPT map capture and live source pressure"
+          git push origin HEAD:refs/heads/agent/chatgpt-map-performance-source-v1
