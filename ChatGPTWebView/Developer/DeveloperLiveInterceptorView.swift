@@ -7,6 +7,7 @@ struct DeveloperLiveInterceptorView: View {
 
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var profileSessionPool: ChatGPTProfileSessionPool
+    @ObservedObject private var memoryWriteActivity = LocalMemoryWriteActivity.shared
     @StateObject private var model = DeveloperLiveInterceptorModel()
     @State private var searchText = ""
     @State private var selectedKind = DeveloperLiveEventKindFilter.all
@@ -169,10 +170,14 @@ struct DeveloperLiveInterceptorView: View {
         let droppedEventCount = model.droppedEventCount
         let snapshotGeneration = model.snapshotGeneration
         isSavingToMemory = true
+        memoryWriteActivity.begin()
         appModel.statusMessage = "Packaging all \(snapshot.count) retained live events into one Memory ZIP..."
 
         Task { @MainActor in
-            defer { isSavingToMemory = false }
+            defer {
+                isSavingToMemory = false
+                memoryWriteActivity.end()
+            }
 
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
