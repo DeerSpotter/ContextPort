@@ -1,0 +1,166 @@
+name: Finalize ChatGPT hotfix source on Ubuntu
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-map-performance
+
+permissions:
+  contents: write
+
+jobs:
+  finalize-source:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/chatgpt-map-performance
+          fetch-depth: 0
+
+      - name: Apply validated source transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, gzip
+          from pathlib import Path
+          encoded = Path('.github/contextport_hotfix_patch.py.gz.b64').read_text().strip()
+          Path('/tmp/contextport_hotfix_patch.py').write_bytes(gzip.decompress(base64.b64decode(encoded)))
+          PY
+          python3 /tmp/contextport_hotfix_patch.py
+          python3 .github/fix-chatgpt-text-parts.py
+          git diff --check
+
+      - name: Extract and parse active branch capture JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re
+          source = pathlib.Path('ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift').read_text()
+          match = re.search(r'private static let captureScript = #"""(.*?)"""#', source, re.S)
+          if not match:
+              raise SystemExit('captureScript not found')
+          pathlib.Path('/tmp/map-capture.js').write_text(
+              'async function capture(conversationID) {\n' + match.group(1) + '\n}\nmodule.exports = capture;\n'
+          )
+          PY
+          node --check /tmp/map-capture.js
+
+      - name: Test ChatGPT pagination and current-node branch semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/map-test.js <<'JS'
+          const capture = require('/tmp/map-capture.js');
+          global.location = { origin: 'https://chatgpt.com', href: 'https://chatgpt.com/c/test-conversation' };
+          global.document = { title: 'Map Test - ChatGPT', querySelector: () => null };
+          const response = (value, ok = true) => {
+            const body = JSON.stringify(value);
+            return { ok, headers: { get: () => String(body.length) }, text: async () => body };
+          };
+          const msg = (id, role, parts, extra = {}) => ({
+            id, author: { role }, content: { content_type: 'text', parts }, metadata: {}, ...extra
+          });
+          const expected = ['first user','first answer','second user','second answer'];
+
+          async function pagination() {
+            global.fetch = async raw => {
+              const url = String(raw);
+              if (url.includes('/conversations/test-conversation?num_turns=100')) return response({
+                title:'Paginated',
+                messages:[msg('u2','user',['second ','user']),msg('a2','assistant',['second answer'],{channel:'final',recipient:'all'})],
+                page_info:{has_previous_page:true,start_cursor:'older'}
+              });
+              if (url.includes('/messages?before=older&num_turns=100')) return response({
+                messages:[
+                  msg('u1','user',['first user']),
+                  msg('a1','assistant',['first answer'],{channel:'final',recipient:'all'}),
+                  {...msg('hidden','assistant',['hidden answer'],{channel:'final',recipient:'all'}),metadata:{is_visually_hidden_from_conversation:true}}
+                ],
+                page_info:{has_previous_page:false,start_cursor:null}
+              });
+              return response({},false);
+            };
+            const payload = JSON.parse(await capture('test-conversation'));
+            const actual = payload.turns.map(turn => turn.content);
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`pagination ${JSON.stringify(actual)}`);
+            if (payload.diagnostics.strategy !== 'chatgpt-paginated-active-branch') throw new Error(payload.diagnostics.strategy);
+          }
+
+          async function mapping() {
+            global.fetch = async raw => {
+              const url = String(raw);
+              if (url.includes('/conversations/test-conversation?num_turns=100')) return response({},false);
+              if (url.endsWith('/conversation/test-conversation')) return response({
+                title:'Mapping',current_node:'a2',mapping:{
+                  root:{id:'root',parent:null,children:['u1'],message:null},
+                  u1:{id:'u1',parent:'root',children:['a1'],message:msg('u1','user',['first user'])},
+                  a1:{id:'a1',parent:'u1',children:['u2','alt'],message:msg('a1','assistant',['first answer'],{channel:'final',recipient:'all'})},
+                  u2:{id:'u2',parent:'a1',children:['a2'],message:msg('u2','user',['second user'])},
+                  a2:{id:'a2',parent:'u2',children:[],message:msg('a2','assistant',['second answer'],{channel:'final',recipient:'all'})},
+                  alt:{id:'alt',parent:'a1',children:[],message:msg('alt','assistant',['alternate answer'],{channel:'final',recipient:'all'})}
+                }
+              });
+              return response({},false);
+            };
+            const payload = JSON.parse(await capture('test-conversation'));
+            const actual = payload.turns.map(turn => turn.content);
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`mapping ${JSON.stringify(actual)}`);
+            if (actual.includes('alternate answer')) throw new Error('inactive branch leaked');
+            if (payload.diagnostics.strategy !== 'chatgpt-mapping-current-node') throw new Error(payload.diagnostics.strategy);
+          }
+
+          Promise.resolve().then(pagination).then(mapping).then(() => console.log('ChatGPT active branch semantics passed')).catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          JS
+          node /tmp/map-test.js
+
+      - name: Remove transport files and prove final net diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/contextport_hotfix_patch.py.gz.b64
+          rm -f .github/fix-chatgpt-text-parts.py
+          rm -f .github/hotfix-diagnostic.txt
+          rm -f .github/workflows/apply-chatgpt-map-performance-hotfix.yml
+          rm -f .github/workflows/apply-chatgpt-hotfix-python-decode.yml
+          rm -f .github/workflows/diagnose-chatgpt-hotfix.yml
+          rm -f .github/workflows/finalize-chatgpt-map-performance-hotfix.yml
+          rm -f .github/workflows/force-finalize-chatgpt-hotfix.yml
+          rm -f .github/workflows/force-finalize-chatgpt-hotfix-ubuntu.yml
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected = {
+              'ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift',
+              'ChatGPTWebView/Developer/DeveloperSourcesModel.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationExporter.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift',
+              'project.yml',
+          }
+          actual = set(subprocess.check_output(['git','diff','--name-only','ae271328f1eff79262d4b8095e459239031f0da9'], text=True).splitlines())
+          if actual != expected:
+              raise SystemExit(f'Unexpected source scope: {sorted(actual)}')
+          project = Path('project.yml').read_text()
+          if 'MARKETING_VERSION: "2.9.1"' not in project or 'CURRENT_PROJECT_VERSION: "74"' not in project:
+              raise SystemExit('2.9.1 build 74 missing')
+          PY
+
+      - name: Publish validated source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Fix ChatGPT map capture and live source pressure"
+          git push --force origin HEAD:agent/chatgpt-map-performance
