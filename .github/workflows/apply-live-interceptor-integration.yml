@@ -1,0 +1,68 @@
+name: Apply live interceptor integration
+
+on:
+  push:
+    branches:
+      - codex/live-interceptor
+    paths:
+      - .github/workflows/apply-live-interceptor-integration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/live-interceptor
+          fetch-depth: 0
+
+      - name: Wire Dev view and bump build
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root_path = Path('ChatGPTWebView/App/RootView.swift')
+          root = root_path.read_text(encoding='utf-8')
+
+          old_view = '''                DeveloperSourcesView(
+                      isActive: developerModeEnabled && selectedTab == .developer
+                  )'''
+          new_view = '''                DeveloperToolsView(
+                      isActive: developerModeEnabled && selectedTab == .developer
+                  )'''
+          if root.count(old_view) != 1:
+              raise SystemExit(f'Expected one DeveloperSourcesView root integration, found {root.count(old_view)}')
+          root = root.replace(old_view, new_view)
+
+          old_footer = 'Adds a Dev tab with an on-demand Sources inspector. No source indexing runs while Developer Mode is off. Once indexed, loaded source text stays available across tabs and is cleared only when ContextPort closes.'
+          new_footer = 'Adds a Dev tab with separate Static source capture and Live WKWebView interception. Static indexing remains manual. Live capture runs only after Start Live Capture is pressed and continues while you return to an AI tab until explicitly stopped.'
+          if root.count(old_footer) != 1:
+              raise SystemExit(f'Expected one Developer footer, found {root.count(old_footer)}')
+          root = root.replace(old_footer, new_footer)
+          root_path.write_text(root, encoding='utf-8')
+
+          project_path = Path('project.yml')
+          project = project_path.read_text(encoding='utf-8')
+          if project.count('MARKETING_VERSION: "2.9.4"') != 1:
+              raise SystemExit('Expected ContextPort 2.9.4 baseline')
+          if project.count('CURRENT_PROJECT_VERSION: "77"') != 1:
+              raise SystemExit('Expected build 77 baseline')
+          project = project.replace('MARKETING_VERSION: "2.9.4"', 'MARKETING_VERSION: "2.10.0"')
+          project = project.replace('CURRENT_PROJECT_VERSION: "77"', 'CURRENT_PROJECT_VERSION: "78"')
+          project_path.write_text(project, encoding='utf-8')
+          PY
+
+      - name: Commit integration
+        shell: bash
+        run: |
+          git config user.name "ContextPort Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add ChatGPTWebView/App/RootView.swift project.yml
+          git diff --cached --check
+          git commit -m "Wire live interceptor into Dev mode"
+          git push origin HEAD:codex/live-interceptor
