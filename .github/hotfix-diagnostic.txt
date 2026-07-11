@@ -1,2 +1,43 @@
 patch_exit_status=0
 
+=== swift parse: ChatGPTWebView/Developer/DeveloperSourcesModel.swift ===
+swift_parse_exit_status=0
+
+=== swift parse: ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift ===
+swift_parse_exit_status=0
+
+=== swift parse: ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift ===
+swift_parse_exit_status=0
+
+=== swift parse: ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift ===
+swift_parse_exit_status=0
+
+=== swift parse: ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift ===
+swift_parse_exit_status=0
+
+=== swift parse: ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift ===
+swift_parse_exit_status=0
+
+=== swift parse: ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift ===
+<unknown>:0: error: error opening input file 'ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift' (No such file or directory)
+swift_parse_exit_status=1
+
+=== swift parse: ChatGPTWebView/Web/ChatGPTConversationExporter.swift ===
+swift_parse_exit_status=0
+
+=== extract map capture script ===
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py", line 787, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
+         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py", line 771, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift'
+extract_exit_status=1
+
+=== diff check ===
+diff_check_exit_status=0
+
+=== changed paths ===
