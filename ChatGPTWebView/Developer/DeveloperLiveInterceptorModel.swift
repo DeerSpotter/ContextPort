@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import WebKit
 
@@ -31,7 +32,7 @@ struct DeveloperLiveNetworkEvent: Identifiable, Sendable {
     }
 
     var searchText: String {
-        [sessionTitle, pageURL, kind, phase, method, url, status.map(String.init),
+        [sessionTitle, pageURL, kind, phase, method, url, status.map { String($0) },
          mimeType, requestBodyPreview, responseBodyPreview, detail]
             .compactMap { $0 }
             .joined(separator: " ")
