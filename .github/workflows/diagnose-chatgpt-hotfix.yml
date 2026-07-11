@@ -23,7 +23,18 @@ jobs:
         run: |
           set +e
           : > /tmp/contextport-hotfix.log
-          base64 --decode .github/contextport_hotfix_patch.py.gz.b64 | gunzip > /tmp/contextport_hotfix_patch.py
+          python3 - <<'PY' >> /tmp/contextport-hotfix.log 2>&1
+          import base64
+          import gzip
+          from pathlib import Path
+
+          encoded = Path('.github/contextport_hotfix_patch.py.gz.b64').read_text().strip()
+          patch = gzip.decompress(base64.b64decode(encoded))
+          Path('/tmp/contextport_hotfix_patch.py').write_bytes(patch)
+          print('decoded_patch_bytes=', len(patch))
+          PY
+          decode_status=$?
+          echo "decode_exit_status=$decode_status" >> /tmp/contextport-hotfix.log
           python3 /tmp/contextport_hotfix_patch.py >> /tmp/contextport-hotfix.log 2>&1
           patch_status=$?
           echo "patch_exit_status=$patch_status" >> /tmp/contextport-hotfix.log
@@ -79,5 +90,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .github/hotfix-diagnostic.txt
-          git commit -m "Record ChatGPT hotfix validation diagnostic"
+          git commit -m "Record decoded ChatGPT hotfix validation diagnostic"
           git push origin HEAD:agent/chatgpt-map-performance
