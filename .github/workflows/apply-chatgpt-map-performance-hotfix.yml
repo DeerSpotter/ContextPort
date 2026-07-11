@@ -1,0 +1,210 @@
+name: Apply ChatGPT map and performance hotfix
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-map-performance
+
+permissions:
+  contents: write
+
+jobs:
+  apply-hotfix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/chatgpt-map-performance
+          fetch-depth: 0
+
+      - name: Decode and apply source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .github/contextport_hotfix_patch.py.gz.b64 | gunzip > /tmp/contextport_hotfix_patch.py
+          python3 /tmp/contextport_hotfix_patch.py
+
+      - name: Parse changed Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            ChatGPTWebView/Developer/DeveloperSourcesModel.swift \
+            ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift \
+            ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift \
+            ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift \
+            ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift \
+            ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift \
+            ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift \
+            ChatGPTWebView/Web/ChatGPTConversationExporter.swift
+          do
+            xcrun swiftc -frontend -parse "$file"
+          done
+
+      - name: Validate ChatGPT active branch capture JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re
+          source = pathlib.Path('ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift').read_text()
+          match = re.search(r'private static let captureScript = #"""(.*?)"""#', source, re.S)
+          if not match:
+              raise SystemExit('captureScript raw Swift string not found')
+          body = match.group(1)
+          pathlib.Path('/tmp/chatgpt-map-capture.js').write_text(
+              'async function capture(conversationID) {\n' + body + '\n}\nmodule.exports = capture;\n'
+          )
+          PY
+          node --check /tmp/chatgpt-map-capture.js
+          cat > /tmp/chatgpt-map-capture-test.js <<'JS'
+          const capture = require('/tmp/chatgpt-map-capture.js');
+
+          global.location = {
+            origin: 'https://chatgpt.com',
+            href: 'https://chatgpt.com/c/test-conversation'
+          };
+          global.document = {
+            title: 'Map Test - ChatGPT',
+            querySelector: () => null
+          };
+
+          const response = (value, ok = true) => {
+            const text = JSON.stringify(value);
+            return {
+              ok,
+              headers: { get: name => name.toLowerCase() === 'content-length' ? String(text.length) : null },
+              text: async () => text
+            };
+          };
+          const message = (id, role, content, extra = {}) => ({
+            id,
+            author: { role },
+            content: { content_type: 'text', parts: [content] },
+            metadata: {},
+            ...extra
+          });
+
+          async function testPaginatedBranch() {
+            global.fetch = async url => {
+              const value = String(url);
+              if (value.includes('/conversations/test-conversation?num_turns=100')) {
+                return response({
+                  title: 'Paginated Map',
+                  messages: [
+                    message('u2', 'user', 'second user'),
+                    message('a2', 'assistant', 'second answer', { channel: 'final', recipient: 'all' })
+                  ],
+                  page_info: { has_previous_page: true, start_cursor: 'older' }
+                });
+              }
+              if (value.includes('/conversations/test-conversation/messages?before=older&num_turns=100')) {
+                return response({
+                  messages: [
+                    message('u1', 'user', 'first user'),
+                    message('a1', 'assistant', 'first answer', { channel: 'final', recipient: 'all' })
+                  ],
+                  page_info: { has_previous_page: false, start_cursor: null }
+                });
+              }
+              return response({}, false);
+            };
+
+            const payload = JSON.parse(await capture('test-conversation'));
+            const contents = payload.turns.map(turn => turn.content);
+            const expected = ['first user', 'first answer', 'second user', 'second answer'];
+            if (JSON.stringify(contents) !== JSON.stringify(expected)) {
+              throw new Error(`paginated order mismatch: ${JSON.stringify(contents)}`);
+            }
+            if (payload.diagnostics.strategy !== 'chatgpt-paginated-active-branch') {
+              throw new Error(`unexpected paginated strategy: ${payload.diagnostics.strategy}`);
+            }
+          }
+
+          async function testMappingCurrentNodeBranch() {
+            global.fetch = async url => {
+              const value = String(url);
+              if (value.includes('/conversations/test-conversation?num_turns=100')) {
+                return response({}, false);
+              }
+              if (value.endsWith('/conversation/test-conversation')) {
+                return response({
+                  title: 'Mapping Map',
+                  current_node: 'a2',
+                  mapping: {
+                    root: { id: 'root', parent: null, children: ['u1'], message: null },
+                    u1: { id: 'u1', parent: 'root', children: ['a1'], message: message('u1', 'user', 'first user') },
+                    a1: { id: 'a1', parent: 'u1', children: ['u2', 'alt'], message: message('a1', 'assistant', 'first answer', { channel: 'final', recipient: 'all' }) },
+                    u2: { id: 'u2', parent: 'a1', children: ['a2'], message: message('u2', 'user', 'second user') },
+                    a2: { id: 'a2', parent: 'u2', children: [], message: message('a2', 'assistant', 'second answer', { channel: 'final', recipient: 'all' }) },
+                    alt: { id: 'alt', parent: 'a1', children: [], message: message('alt', 'assistant', 'alternate answer', { channel: 'final', recipient: 'all' }) }
+                  }
+                });
+              }
+              return response({}, false);
+            };
+
+            const payload = JSON.parse(await capture('test-conversation'));
+            const contents = payload.turns.map(turn => turn.content);
+            const expected = ['first user', 'first answer', 'second user', 'second answer'];
+            if (JSON.stringify(contents) !== JSON.stringify(expected)) {
+              throw new Error(`current_node branch mismatch: ${JSON.stringify(contents)}`);
+            }
+            if (contents.includes('alternate answer')) {
+              throw new Error('inactive mapping branch leaked into saved context');
+            }
+            if (payload.diagnostics.strategy !== 'chatgpt-mapping-current-node') {
+              throw new Error(`unexpected mapping strategy: ${payload.diagnostics.strategy}`);
+            }
+          }
+
+          Promise.resolve()
+            .then(testPaginatedBranch)
+            .then(testMappingCurrentNodeBranch)
+            .then(() => console.log('ChatGPT active branch capture tests passed'))
+            .catch(error => {
+              console.error(error);
+              process.exit(1);
+            });
+          JS
+          node /tmp/chatgpt-map-capture-test.js
+
+      - name: Verify final source scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/contextport_hotfix_patch.py.gz.b64
+          rm -f .github/workflows/apply-chatgpt-map-performance-hotfix.yml
+          git diff --check
+          python3 - <<'PY'
+          import pathlib, subprocess
+          expected = {
+              'ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift',
+              'ChatGPTWebView/Developer/DeveloperSourcesModel.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationExporter.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift',
+              'project.yml',
+          }
+          actual = set(subprocess.check_output(['git', 'status', '--short'], text=True).splitlines())
+          paths = {line[3:] for line in actual}
+          if paths != expected:
+              raise SystemExit(f'Unexpected final file scope: {sorted(paths)}')
+          project = pathlib.Path('project.yml').read_text()
+          if 'MARKETING_VERSION: "2.9.1"' not in project or 'CURRENT_PROJECT_VERSION: "74"' not in project:
+              raise SystemExit('Version/build bump missing')
+          PY
+
+      - name: Commit hotfix source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Fix ChatGPT map capture and live source pressure"
+          git push origin HEAD:agent/chatgpt-map-performance
