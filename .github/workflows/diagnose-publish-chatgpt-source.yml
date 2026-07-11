@@ -1,0 +1,105 @@
+name: Diagnose immutable ChatGPT source publisher
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-map-performance
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose-publisher:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Run publisher gates and capture output
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/publish-source.log
+          python3 - <<'PY' >> /tmp/publish-source.log 2>&1
+          import base64, gzip
+          from pathlib import Path
+          encoded = Path('.github/contextport_hotfix_patch.py.gz.b64').read_text().strip()
+          patch = gzip.decompress(base64.b64decode(encoded))
+          Path('/tmp/contextport_hotfix_patch.py').write_bytes(patch)
+          print('decoded_patch_bytes=', len(patch))
+          PY
+          echo "decode_status=$?" >> /tmp/publish-source.log
+          python3 /tmp/contextport_hotfix_patch.py >> /tmp/publish-source.log 2>&1
+          echo "patch_status=$?" >> /tmp/publish-source.log
+          python3 .github/fix-chatgpt-text-parts.py >> /tmp/publish-source.log 2>&1
+          echo "text_parts_status=$?" >> /tmp/publish-source.log
+          git diff --check >> /tmp/publish-source.log 2>&1
+          echo "preclean_diff_status=$?" >> /tmp/publish-source.log
+
+          python3 - <<'PY' >> /tmp/publish-source.log 2>&1
+          import pathlib, re
+          source = pathlib.Path('ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift').read_text()
+          match = re.search(r'private static let captureScript = #"""(.*?)"""#', source, re.S)
+          print('capture_script_found=', bool(match))
+          if match:
+              pathlib.Path('/tmp/map-capture.js').write_text('async function capture(conversationID) {\n' + match.group(1) + '\n}\nmodule.exports = capture;\n')
+          PY
+          echo "extract_status=$?" >> /tmp/publish-source.log
+          node --check /tmp/map-capture.js >> /tmp/publish-source.log 2>&1
+          echo "node_status=$?" >> /tmp/publish-source.log
+
+          rm -f .github/contextport_hotfix_patch.py.gz.b64
+          rm -f .github/fix-chatgpt-text-parts.py
+          rm -f .github/hotfix-diagnostic.txt
+          rm -f .github/workflows/apply-chatgpt-map-performance-hotfix.yml
+          rm -f .github/workflows/apply-chatgpt-hotfix-python-decode.yml
+          rm -f .github/workflows/diagnose-chatgpt-hotfix.yml
+          rm -f .github/workflows/finalize-chatgpt-map-performance-hotfix.yml
+          rm -f .github/workflows/force-finalize-chatgpt-hotfix.yml
+          rm -f .github/workflows/force-finalize-chatgpt-hotfix-ubuntu.yml
+          rm -f .github/workflows/publish-chatgpt-hotfix-source-branch.yml
+          rm -f .github/workflows/diagnose-publish-chatgpt-source.yml
+          git diff --check >> /tmp/publish-source.log 2>&1
+          echo "postclean_diff_status=$?" >> /tmp/publish-source.log
+
+          echo "changed_paths_begin" >> /tmp/publish-source.log
+          git diff --name-only ae271328f1eff79262d4b8095e459239031f0da9 >> /tmp/publish-source.log 2>&1
+          echo "changed_paths_end" >> /tmp/publish-source.log
+          python3 - <<'PY' >> /tmp/publish-source.log 2>&1
+          from pathlib import Path
+          import subprocess
+          expected = {
+              'ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift',
+              'ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift',
+              'ChatGPTWebView/Developer/DeveloperSourcesModel.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationExporter.swift',
+              'ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift',
+              'ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift',
+              'project.yml',
+          }
+          actual = set(subprocess.check_output(['git','diff','--name-only','ae271328f1eff79262d4b8095e459239031f0da9'], text=True).splitlines())
+          print('scope_matches=', actual == expected)
+          print('actual_paths=', sorted(actual))
+          project = Path('project.yml').read_text()
+          print('version_2_9_1=', 'MARKETING_VERSION: "2.9.1"' in project)
+          print('build_74=', 'CURRENT_PROJECT_VERSION: "74"' in project)
+          PY
+          echo "scope_probe_status=$?" >> /tmp/publish-source.log
+
+          set -e
+          mkdir -p .github
+          cp /tmp/publish-source.log .github/publish-source-diagnostic.txt
+          git reset --hard HEAD
+          git clean -fd
+          mkdir -p .github
+          cp /tmp/publish-source.log .github/publish-source-diagnostic.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/publish-source-diagnostic.txt
+          git commit -m "Record immutable source publisher diagnostic"
+          git push origin HEAD:refs/heads/agent/chatgpt-map-publish-diagnostic-v1
