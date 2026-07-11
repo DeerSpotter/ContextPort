@@ -1,0 +1,38 @@
+name: Diagnose ChatGPT hotfix patch
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-map-performance
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/chatgpt-map-performance
+          fetch-depth: 0
+
+      - name: Run patch and retain exact diagnostics
+        shell: bash
+        run: |
+          set +e
+          base64 --decode .github/contextport_hotfix_patch.py.gz.b64 | gunzip > /tmp/contextport_hotfix_patch.py
+          python3 /tmp/contextport_hotfix_patch.py > /tmp/contextport-hotfix.log 2>&1
+          status=$?
+          set -e
+          {
+            echo "patch_exit_status=$status"
+            echo
+            cat /tmp/contextport-hotfix.log
+          } > .github/hotfix-diagnostic.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/hotfix-diagnostic.txt
+          git commit -m "Record ChatGPT hotfix patch diagnostic"
+          git push origin HEAD:agent/chatgpt-map-performance
