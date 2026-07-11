@@ -64,6 +64,7 @@ enum DeveloperLiveInterceptorScript {
       try{if(typeof WebSocket!=='undefined'){
         const Native=WebSocket, Wrapped=function(target,protocols){const socket=protocols===undefined?new Native(target):new Native(target,protocols), id=b.id('websocket'), u=url(target), started=performance.now();b.push({id,kind:'websocket',phase:'connect',url:u});
           socket.addEventListener('open',()=>b.push({id:`${id}-open`,kind:'websocket',phase:'open',url:u,duration:performance.now()-started}));
+          socket.addEventListener('message',e=>b.push({id:`${id}-message-${Date.now()}`,kind:'websocket',phase:'message',url:u,responseBody:b.body(e.data)}));
           socket.addEventListener('close',e=>b.push({id:`${id}-close`,kind:'websocket',phase:'close',url:u,status:e.code,detail:b.text(e.reason,1024)}));
           socket.addEventListener('error',()=>b.push({id:`${id}-error`,kind:'websocket',phase:'error',url:u}));
           const nativeSend=socket.send;socket.send=function(data){b.push({id:`${id}-send-${Date.now()}`,kind:'websocket',phase:'send',url:u,requestBody:b.body(data)});return Reflect.apply(nativeSend,this,arguments);};return socket;};
@@ -71,7 +72,7 @@ enum DeveloperLiveInterceptorScript {
       }}catch(_){}
 
       try{if(typeof EventSource!=='undefined'){
-        const Native=EventSource, Wrapped=function(target,config){const source=new Native(target,config),id=b.id('eventsource'),u=url(target),started=performance.now();b.push({id,kind:'eventsource',phase:'connect',url:u});source.addEventListener('open',()=>b.push({id:`${id}-open`,kind:'eventsource',phase:'open',url:u,duration:performance.now()-started}));source.addEventListener('error',()=>b.push({id:`${id}-error`,kind:'eventsource',phase:'error',url:u}));return source;};
+        const Native=EventSource, Wrapped=function(target,config){const source=new Native(target,config),id=b.id('eventsource'),u=url(target),started=performance.now();b.push({id,kind:'eventsource',phase:'connect',url:u});source.addEventListener('open',()=>b.push({id:`${id}-open`,kind:'eventsource',phase:'open',url:u,duration:performance.now()-started}));source.addEventListener('message',e=>b.push({id:`${id}-message-${Date.now()}`,kind:'eventsource',phase:'message',url:u,responseBody:b.body(e.data)}));source.addEventListener('error',()=>b.push({id:`${id}-error`,kind:'eventsource',phase:'error',url:u}));return source;};
         Object.setPrototypeOf(Wrapped,Native);Wrapped.prototype=Native.prototype;window.EventSource=Wrapped;
       }}catch(_){}
 
