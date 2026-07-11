@@ -297,7 +297,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
         and path inside this ZIP.
 
         Sources contains the complete retained source text that ContextPort successfully indexed.
-        Metadata-only binary resources and true load errors remain documented separately in manifest.json
+        Metadata-only resources and true load errors remain documented separately in manifest.json
         even when no source text file exists.
         """
         try writer.add(
@@ -358,7 +358,7 @@ final class DeveloperSourceMemoryArchiveBuilder {
 
         - Sources discovered: \(items.count)
         - Sources with indexed text: \(loadedCount)
-        - Metadata-only binary resources: \(metadataOnlyCount)
+        - Metadata-only resources: \(metadataOnlyCount)
         - Sources with load errors: \(failedCount)
         - Browser sessions: \(sessionCount)
         - Indexed source text: \(size)

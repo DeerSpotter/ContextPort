@@ -188,11 +188,15 @@ extension ChatGPTWebViewStore {
                   .filter(element => element instanceof HTMLElement);
                 if (found.length === 0) continue;
 
-                return found.filter((element, index) =>
-                  !found.some((other, otherIndex) =>
-                    otherIndex !== index && other.contains(element)
-                  )
-                );
+                return found.filter(element => {
+                  const parent = element.parentElement;
+                  if (!parent) return true;
+                  try {
+                    return !parent.closest(selector);
+                  } catch {
+                    return true;
+                  }
+                });
               } catch {}
             }
             return [];
@@ -240,7 +244,9 @@ extension ChatGPTWebViewStore {
 
             for (let index = 0; index < state.messages.length; index += 1) {
               const element = state.messages[index];
-              element.setAttribute(TRACKED_ATTRIBUTE, 'true');
+              if (!element.hasAttribute(TRACKED_ATTRIBUTE)) {
+                element.setAttribute(TRACKED_ATTRIBUTE, 'true');
+              }
               setHidden(element, index < cutoff);
             }
           };
@@ -369,7 +375,8 @@ extension ChatGPTWebViewStore {
         case .chatGPT:
             return LatestExchangeDOMConfiguration(
                 messageSelectors: [
-                    "section[data-testid^=\"conversation-turn-\"]"
+                    "section[data-testid^=\"conversation-turn-\"]",
+                    "[data-message-author-role]"
                 ]
             )
         case .claude:

@@ -89,12 +89,15 @@ enum DeveloperSourceMapRecovery {
 
         for validated in validatedMaps {
             let parentURL = validated.candidate.parentSourceURL
+            let embeddedSourceContentCount = validated.document.sourcesContent?.compactMap { $0 }.count ?? 0
+            let retainMapText = embeddedSourceContentCount == 0
             let mapMetadata = [
                 "Discovery: \(validated.candidate.discovery)",
                 parentURL.map { "Parent Source URL: \($0)" },
                 "Validated SourceMap: version 3",
                 "Embedded sources: \(validated.document.sources.count)",
-                "Embedded sourcesContent entries: \(validated.document.sourcesContent?.compactMap { $0 }.count ?? 0)"
+                "Embedded sourcesContent entries: \(embeddedSourceContentCount)",
+                retainMapText ? nil : "Retention: validated map JSON is metadata-only because embedded sourcesContent was expanded into original source entries; this avoids retaining the same source text twice in memory."
             ]
             .compactMap { $0 }
             .joined(separator: "\n")
@@ -107,9 +110,9 @@ enum DeveloperSourceMapRecovery {
                     displayName: displayNameForMap(validated.mapURLString),
                     urlString: httpURLString(validated.mapURLString),
                     kind: "Source Map • Validated v3",
-                    content: validated.content,
+                    content: retainMapText ? validated.content : nil,
                     metadataNote: mapMetadata,
-                    resourceByteCount: nil,
+                    resourceByteCount: retainMapText ? nil : validated.content.utf8.count,
                     loadError: nil
                 )
             )

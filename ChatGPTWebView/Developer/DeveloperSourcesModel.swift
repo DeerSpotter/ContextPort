@@ -19,6 +19,26 @@ struct DeveloperDiscoveredSource: Decodable, Sendable {
     let url: String?
     let kind: String
     let inlineSource: String?
+    let inlineSourceIndex: Int?
+    let inlineSourceCharacterCount: Int?
+
+    init(
+        key: String,
+        displayName: String,
+        url: String?,
+        kind: String,
+        inlineSource: String?,
+        inlineSourceIndex: Int? = nil,
+        inlineSourceCharacterCount: Int? = nil
+    ) {
+        self.key = key
+        self.displayName = displayName
+        self.url = url
+        self.kind = kind
+        self.inlineSource = inlineSource
+        self.inlineSourceIndex = inlineSourceIndex
+        self.inlineSourceCharacterCount = inlineSourceCharacterCount
+    }
 }
 
 struct DeveloperSourceFile: Identifiable, Sendable {
@@ -131,15 +151,8 @@ final class DeveloperSourcesModel: ObservableObject {
                     let firstPage = try await discoverDeveloperSources(in: session.webView)
                     scannedSessionCount += 1
 
-                    let firstInline = developerInlineSourceFiles(
-                        from: firstPage.sources,
-                        session: session,
-                        pageURL: firstPage.pageURL
-                    )
-                    collected.append(contentsOf: firstInline)
-
                     let firstExternalDescriptors = firstPage.sources.filter {
-                        $0.inlineSource == nil && $0.url != nil
+                        $0.inlineSourceIndex == nil && $0.inlineSource == nil && $0.url != nil
                     }
                     let firstExternal = await loadExternalDeveloperSources(
                         firstExternalDescriptors,
@@ -151,7 +164,17 @@ final class DeveloperSourcesModel: ObservableObject {
                     )
                     collected.append(contentsOf: firstExternal)
 
-                    let firstPassSessionFiles = firstInline + firstExternal
+                    guard !Task.isCancelled else { return }
+                    self.status = "Reading inline sources in bounded chunks..."
+
+                    let firstInline = await loadDeveloperInlineSourceFiles(
+                        from: firstPage.sources,
+                        session: session,
+                        pageURL: firstPage.pageURL
+                    )
+                    collected.append(contentsOf: firstInline)
+
+                    let firstPassSessionFiles = firstExternal + firstInline
                     firstPassCount += firstPassSessionFiles.count
 
                     guard !Task.isCancelled else { return }

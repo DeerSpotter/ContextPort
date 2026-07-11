@@ -18,6 +18,7 @@ enum ChatConversationExportError: LocalizedError {
     case securityInterstitialDetected
     case noMessagesFound
     case invalidConversationStructure
+    case chatGPTConversationMapUnavailable
     case providerCaptureRequired(String)
     case providerUIChanged(String)
     case cannotCreatePDF
@@ -34,6 +35,8 @@ enum ChatConversationExportError: LocalizedError {
             return "No positively identified conversation messages were found. The AI page may have changed or may not be a conversation."
         case .invalidConversationStructure:
             return "ContextPort found conversation content but could not verify both a user turn and an AI response. Nothing was saved."
+        case .chatGPTConversationMapUnavailable:
+            return "ContextPort could not recover ChatGPT's complete active conversation branch from the current provider conversation transport. Nothing was saved because a DOM-only snapshot may omit older or non-materialized turns. Refresh the conversation and try Save Context again."
         case .providerCaptureRequired(let providerName):
             return "Save Context for \(providerName) is intentionally disabled until ContextPort captures and verifies that provider's real conversation UI markers. Enable Developer Mode, open a short \(providerName) conversation, then save the loaded Sources to Memory for selector review."
         case .providerUIChanged(let message):
@@ -85,18 +88,45 @@ final class ChatConversationExporter {
             throw ChatConversationExportError.unsupportedConversationPage
         }
 
-        let raw = try await evaluateJavaScript(
-            extractionJavaScript(provider: provider),
-            in: webView
-        )
-        guard let json = raw as? String,
-              let data = json.data(using: .utf8) else {
+        let json: String
+        if provider.id == .chatGPT {
+            let mapCapture = try await ChatGPTConversationMapCapture.capture(from: webView)
+            if mapCapture.isConversationRoute {
+                guard let payloadJSON = mapCapture.payloadJSON else {
+                    throw ChatConversationExportError.invalidPayload
+                }
+                json = payloadJSON
+            } else {
+                let raw = try await evaluateJavaScript(
+                    extractionJavaScript(provider: provider),
+                    in: webView
+                )
+                guard let payloadJSON = raw as? String else {
+                    throw ChatConversationExportError.invalidPayload
+                }
+                json = payloadJSON
+            }
+        } else {
+            let raw = try await evaluateJavaScript(
+                extractionJavaScript(provider: provider),
+                in: webView
+            )
+            guard let payloadJSON = raw as? String else {
+                throw ChatConversationExportError.invalidPayload
+            }
+            json = payloadJSON
+        }
+
+        guard let data = json.data(using: .utf8) else {
             throw ChatConversationExportError.invalidPayload
         }
 
         let payload = try JSONDecoder().decode(ChatConversationExportPayload.self, from: data)
         if payload.error == "provider-capture-required" {
             throw ChatConversationExportError.providerCaptureRequired(provider.displayName)
+        }
+        if payload.error == "chatgpt-map-unavailable" || payload.error == "chatgpt-map-incomplete" {
+            throw ChatConversationExportError.chatGPTConversationMapUnavailable
         }
 
         let turns = payload.turns.compactMap(validateTurn)
