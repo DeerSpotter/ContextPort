@@ -27,17 +27,96 @@ struct DeveloperSourcesView: View {
                     }
 
                     Button {
-                        model.scan(sessions: profileSessionPool.developerSourceSessions())
+                        model.runFirstPass(
+                            sessions: profileSessionPool.developerSourceSessions()
+                        )
                     } label: {
-                        Label("Refresh Loaded Sources", systemImage: "arrow.clockwise")
+                        Label(
+                            stageComplete(.firstPass)
+                                ? "Step 1 Complete · Capture Again"
+                                : "Step 1 · Capture Loaded Sources",
+                            systemImage: stageComplete(.firstPass)
+                                ? "checkmark.circle.fill"
+                                : "1.circle"
+                        )
                     }
-                    .disabled(model.isScanning || isSavingToMemory)
+                    .disabled(!model.canRunFirstPass || isSavingToMemory)
+
+                    Button {
+                        model.runSecondPass()
+                    } label: {
+                        Label(
+                            stageComplete(.secondPass)
+                                ? "Step 2 Complete · Runtime Sources"
+                                : "Step 2 · Reconcile Runtime Sources",
+                            systemImage: stageComplete(.secondPass)
+                                ? "checkmark.circle.fill"
+                                : "2.circle"
+                        )
+                    }
+                    .disabled(!model.canRunSecondPass || isSavingToMemory)
+
+                    Button {
+                        model.runNestedPass()
+                    } label: {
+                        Label(
+                            stageComplete(.nestedDependencies)
+                                ? "Step 3 Complete · Nested Dependencies"
+                                : "Step 3 · Scan Nested Dependencies",
+                            systemImage: stageComplete(.nestedDependencies)
+                                ? "checkmark.circle.fill"
+                                : "3.circle"
+                        )
+                    }
+                    .disabled(!model.canRunNestedPass || isSavingToMemory)
+
+                    Button {
+                        model.runSourceMapDiscovery()
+                    } label: {
+                        Label(
+                            stageComplete(.sourceMapDiscovery)
+                                ? "Step 4A Complete · Map Candidates"
+                                : "Step 4A · Discover SourceMaps",
+                            systemImage: stageComplete(.sourceMapDiscovery)
+                                ? "checkmark.circle.fill"
+                                : "a.circle"
+                        )
+                    }
+                    .disabled(!model.canRunSourceMapDiscovery || isSavingToMemory)
+
+                    Button {
+                        model.runSourceMapValidation()
+                    } label: {
+                        Label(
+                            stageComplete(.sourceMapValidation)
+                                ? "Step 4B Complete · Validated Maps"
+                                : "Step 4B · Validate SourceMaps",
+                            systemImage: stageComplete(.sourceMapValidation)
+                                ? "checkmark.circle.fill"
+                                : "b.circle"
+                        )
+                    }
+                    .disabled(!model.canRunSourceMapValidation || isSavingToMemory)
+
+                    Button {
+                        model.runSourceMapDecode()
+                    } label: {
+                        Label(
+                            stageComplete(.sourceMaps)
+                                ? "Step 4C Complete · Decoded Sources"
+                                : "Step 4C · Decode Original Sources",
+                            systemImage: stageComplete(.sourceMaps)
+                                ? "checkmark.circle.fill"
+                                : "c.circle"
+                        )
+                    }
+                    .disabled(!model.canRunSourceMapDecode || isSavingToMemory)
 
                     Button {
                         saveSourcesToMemory()
                     } label: {
                         Label(
-                            isCurrentSnapshotSaved ? "Saved to Memory" : "Save Sources to Memory",
+                            isCurrentSnapshotSaved ? "Saved to Memory" : "Save Current Stage to Memory",
                             systemImage: isCurrentSnapshotSaved ? "checkmark.circle.fill" : "archivebox.fill"
                         )
                     }
@@ -50,13 +129,13 @@ struct DeveloperSourcesView: View {
                 } header: {
                     Text("Source Inspector")
                 } footer: {
-                    Text("The first pass inventories loaded scripts, styles, module preloads, and runtime resources. A bounded second pass reconciles late runtime entries, explicit source references, and numeric Webpack/Rspack chunk calls against shipped runtime tables. One strict nested pass then inspects only resolved bundler JavaScript and worker chunks for explicit imports, workers, source maps, and runtime `.p + asset` dependencies. The retained index stays in memory until ContextPort closes. Save Sources to Memory packages the complete retained index into one ZIP regardless of the active search filter.")
+                    Text("Developer Sources runs only when you press a numbered step. Step 1 captures the loaded browser inventory. Step 2 reconciles late runtime and bundler references. Step 3 follows one strict nested dependency depth. Step 4A discovers SourceMap candidates without downloading external maps. Step 4B validates one map at a time and caches validated JSON to temporary files. Step 4C reopens one validated map at a time and fully decodes embedded sourcesContent into original source entries. Each child step must finish before the next unlocks. Full decoding is preserved while peak memory is separated across user-controlled stages.")
                 }
 
                 Section("Sources") {
                     if model.results.isEmpty && !model.isScanning {
                         Text(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                             ? "No sources indexed."
+                             ? "No sources indexed. Run Step 1 to begin."
                              : "No source text matched \"\(searchText)\".")
                             .foregroundColor(.secondary)
                     }
@@ -76,17 +155,11 @@ struct DeveloperSourcesView: View {
             .onChange(of: searchText) { query in
                 model.scheduleSearch(query)
             }
-            .task {
-                if isActive {
-                    model.scanIfNeeded(sessions: profileSessionPool.developerSourceSessions())
-                }
-            }
-            .onChange(of: isActive) { active in
-                if active {
-                    model.scanIfNeeded(sessions: profileSessionPool.developerSourceSessions())
-                }
-            }
         }
+    }
+
+    private func stageComplete(_ stage: DeveloperSourceCaptureStage) -> Bool {
+        model.completedStage.rawValue >= stage.rawValue
     }
 
     private var isCurrentSnapshotSaved: Bool {
@@ -115,6 +188,7 @@ struct DeveloperSourcesView: View {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try DeveloperSourceMemoryArchiveBuilder().saveToMemory(items: snapshot)
                 }.value
+                model.markSnapshotFingerprint(snapshotFingerprint)
                 lastSavedSnapshotFingerprint = snapshotFingerprint
                 appModel.reloadLocalMemory()
                 appModel.statusMessage = result.message

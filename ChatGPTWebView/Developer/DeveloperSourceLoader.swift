@@ -20,39 +20,49 @@ func loadExternalDeveloperSources(
     userAgent: String?,
     cookieHeader: String?
 ) async -> [DeveloperSourceFile] {
+    let budget = DeveloperSourceCaptureBudget()
+    return await loadExternalDeveloperSources(
+        descriptors,
+        sessionID: sessionID,
+        sessionTitle: sessionTitle,
+        pageURL: pageURL,
+        userAgent: userAgent,
+        cookieHeader: cookieHeader,
+        budget: budget
+    )
+}
+
+func loadExternalDeveloperSources(
+    _ descriptors: [DeveloperDiscoveredSource],
+    sessionID: String,
+    sessionTitle: String,
+    pageURL: String,
+    userAgent: String?,
+    cookieHeader: String?,
+    budget: DeveloperSourceCaptureBudget
+) async -> [DeveloperSourceFile] {
     guard !descriptors.isEmpty else { return [] }
 
-    let batchSize = 4
     var loaded: [DeveloperSourceFile] = []
-    var batchStart = 0
+    loaded.reserveCapacity(descriptors.count)
 
-    while batchStart < descriptors.count {
-        let batchEnd = min(batchStart + batchSize, descriptors.count)
-        let batch = Array(descriptors[batchStart..<batchEnd])
+    for descriptor in descriptors {
+        guard !Task.isCancelled else { return loaded }
 
-        let batchResults = await withTaskGroup(of: DeveloperSourceFile.self) { group in
-            for descriptor in batch {
-                group.addTask {
-                    await loadExternalDeveloperSource(
-                        descriptor,
-                        sessionID: sessionID,
-                        sessionTitle: sessionTitle,
-                        pageURL: pageURL,
-                        userAgent: userAgent,
-                        cookieHeader: cookieHeader
-                    )
-                }
-            }
+        loaded.append(
+            await loadExternalDeveloperSource(
+                descriptor,
+                sessionID: sessionID,
+                sessionTitle: sessionTitle,
+                pageURL: pageURL,
+                userAgent: userAgent,
+                cookieHeader: cookieHeader,
+                budget: budget
+            )
+        )
 
-            var results: [DeveloperSourceFile] = []
-            for await source in group {
-                results.append(source)
-            }
-            return results
-        }
-
-        loaded.append(contentsOf: batchResults)
-        batchStart = batchEnd
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 5_000_000)
     }
 
     return loaded
@@ -64,7 +74,8 @@ private func loadExternalDeveloperSource(
     sessionTitle: String,
     pageURL: String,
     userAgent: String?,
-    cookieHeader: String?
+    cookieHeader: String?,
+    budget: DeveloperSourceCaptureBudget
 ) async -> DeveloperSourceFile {
     let sourceID = "\(sessionID)::\(descriptor.key)"
 
@@ -87,6 +98,37 @@ private func loadExternalDeveloperSource(
         )
     }
 
+    if isSourceMapDescriptor(descriptor, url: url) {
+        await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
+        return DeveloperSourceFile(
+            id: sourceID,
+            sessionTitle: sessionTitle,
+            pageURL: pageURL,
+            displayName: descriptor.displayName,
+            urlString: urlString,
+            kind: descriptor.kind,
+            content: nil,
+            metadataNote: "SourceMap retrieval was deferred to Step 4B so map probing, validation, and decoding remain isolated from the normal source-loading stages.",
+            resourceByteCount: nil,
+            loadError: nil
+        )
+    }
+
+    let reservation = await budget.reserve(
+        upTo: DeveloperSourceCaptureBudget.maximumExternalSourceBytes
+    )
+    guard reservation > 0 else {
+        await budget.recordOmission()
+        await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
+        return budgetMetadataOnlySource(
+            sourceID: sourceID,
+            descriptor: descriptor,
+            sessionTitle: sessionTitle,
+            pageURL: pageURL,
+            note: "Source text was not loaded because the 32 MB Developer Sources refresh budget was already exhausted. URL and provenance were retained as metadata."
+        )
+    }
+
     do {
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -99,8 +141,10 @@ private func loadExternalDeveloperSource(
         }
         request.setValue(pageURL, forHTTPHeaderField: "Referer")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let maximumSourceBytes = 24 * 1024 * 1024
+        let boundedRequest = DeveloperSourceBoundedRequest(maximumBytes: reservation)
+        let loaded = try await boundedRequest.load(request)
+        let data = loaded.data
+        let response = loaded.response
 
         if let httpResponse = response as? HTTPURLResponse {
             let sourceMapReferences = [
@@ -120,12 +164,9 @@ private func loadExternalDeveloperSource(
             await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
         }
 
-        guard data.count <= maximumSourceBytes else {
-            throw DeveloperSourceLoadError.sourceTooLarge(data.count)
-        }
-
         let mimeType = response.mimeType?.lowercased() ?? ""
         if url.pathExtension.lowercased() == "wasm" || mimeType == "application/wasm" {
+            await budget.release(reservation: reservation)
             return DeveloperSourceFile(
                 id: sourceID,
                 sessionTitle: sessionTitle,
@@ -134,7 +175,7 @@ private func loadExternalDeveloperSource(
                 urlString: urlString,
                 kind: descriptor.kind,
                 content: nil,
-                metadataNote: "Binary WebAssembly resource fetched successfully and retained as metadata-only evidence. ContextPort did not decode or execute it.",
+                metadataNote: "Binary WebAssembly resource reached a successful response and was retained as metadata-only evidence. ContextPort did not decode or execute it.",
                 resourceByteCount: data.count,
                 loadError: nil
             )
@@ -144,6 +185,7 @@ private func loadExternalDeveloperSource(
             throw DeveloperSourceLoadError.notUTF8
         }
 
+        await budget.commit(reservation: reservation, actualBytes: data.count)
         return DeveloperSourceFile(
             id: sourceID,
             sessionTitle: sessionTitle,
@@ -152,11 +194,40 @@ private func loadExternalDeveloperSource(
             urlString: urlString,
             kind: descriptor.kind,
             content: content,
-            metadataNote: nil,
+            metadataNote: "External source text was downloaded sequentially through a bounded response reader.",
             resourceByteCount: nil,
             loadError: nil
         )
+    } catch is CancellationError {
+        await budget.release(reservation: reservation)
+        await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
+        return DeveloperSourceFile(
+            id: sourceID,
+            sessionTitle: sessionTitle,
+            pageURL: pageURL,
+            displayName: descriptor.displayName,
+            urlString: urlString,
+            kind: descriptor.kind,
+            content: nil,
+            metadataNote: "Source capture was cancelled before the complete source body was retained.",
+            resourceByteCount: nil,
+            loadError: nil
+        )
+    } catch let boundedError as DeveloperSourceBoundedLoadError {
+        await budget.release(reservation: reservation, countAsOmission: true)
+        await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
+        let measured = boundedError.byteCount.map {
+            ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file)
+        } ?? "an unknown size"
+        return budgetMetadataOnlySource(
+            sourceID: sourceID,
+            descriptor: descriptor,
+            sessionTitle: sessionTitle,
+            pageURL: pageURL,
+            note: "Source text was not retained because the response reached \(measured), above the available per-file or scan-wide capture budget. URL and provenance were retained as metadata."
+        )
     } catch {
+        await budget.release(reservation: reservation)
         await DeveloperSourceResponseMetadataRegistry.shared.recordSourceMapReferences([], for: sourceID)
         return DeveloperSourceFile(
             id: sourceID,
@@ -173,17 +244,41 @@ private func loadExternalDeveloperSource(
     }
 }
 
+private func isSourceMapDescriptor(_ descriptor: DeveloperDiscoveredSource, url: URL) -> Bool {
+    let path = url.path.lowercased()
+    if path.hasSuffix(".map") { return true }
+    return descriptor.kind.localizedCaseInsensitiveContains("source map")
+}
+
+private func budgetMetadataOnlySource(
+    sourceID: String,
+    descriptor: DeveloperDiscoveredSource,
+    sessionTitle: String,
+    pageURL: String,
+    note: String
+) -> DeveloperSourceFile {
+    DeveloperSourceFile(
+        id: sourceID,
+        sessionTitle: sessionTitle,
+        pageURL: pageURL,
+        displayName: descriptor.displayName,
+        urlString: descriptor.url,
+        kind: descriptor.kind,
+        content: nil,
+        metadataNote: note,
+        resourceByteCount: nil,
+        loadError: nil
+    )
+}
+
 private enum DeveloperSourceLoadError: LocalizedError {
     case httpStatus(Int)
-    case sourceTooLarge(Int)
     case notUTF8
 
     var errorDescription: String? {
         switch self {
         case .httpStatus(let statusCode):
             return "Source request returned HTTP \(statusCode)."
-        case .sourceTooLarge(let byteCount):
-            return "Source is \(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)), above the 24 MB per-source safety limit."
         case .notUTF8:
             return "Source response is not valid UTF-8 text and was recorded without indexed content."
         }
