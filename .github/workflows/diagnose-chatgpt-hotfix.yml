@@ -1,4 +1,4 @@
-name: Publish clean ChatGPT hotfix source v2
+name: Squash clean ChatGPT hotfix source branch
 
 on:
   push:
@@ -9,63 +9,20 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  squash-source:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: agent/chatgpt-map-performance-source-v2
           fetch-depth: 0
 
-      - name: Materialize proven hotfix source
+      - name: Prove exact source diff before squashing
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import base64, gzip
-          from pathlib import Path
-          encoded = Path('.github/contextport_hotfix_patch.py.gz.b64').read_text().strip()
-          Path('/tmp/contextport_hotfix_patch.py').write_bytes(gzip.decompress(base64.b64decode(encoded)))
-          PY
-          python3 /tmp/contextport_hotfix_patch.py
-          python3 .github/fix-chatgpt-text-parts.py
-          git diff --check
-
-      - name: Verify embedded ChatGPT active-branch script
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import pathlib, re
-          source = pathlib.Path('ChatGPTWebView/Web/ChatGPTConversationMapCapture.swift').read_text()
-          match = re.search(r'private static let captureScript = #"""(.*?)"""#', source, re.S)
-          if not match:
-              raise SystemExit('captureScript not found')
-          pathlib.Path('/tmp/map-capture.js').write_text(
-              'async function capture(conversationID) {\n' + match.group(1) + '\n}\nmodule.exports = capture;\n'
-          )
-          PY
-          node --check /tmp/map-capture.js
-
-      - name: Remove staging files and prove exact nine-file source scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f .github/contextport_hotfix_patch.py.gz.b64
-          rm -f .github/fix-chatgpt-text-parts.py
-          rm -f .github/hotfix-diagnostic.txt
-          rm -f .github/workflows/apply-chatgpt-map-performance-hotfix.yml
-          rm -f .github/workflows/apply-chatgpt-hotfix-python-decode.yml
-          rm -f .github/workflows/diagnose-chatgpt-hotfix.yml
-          rm -f .github/workflows/finalize-chatgpt-map-performance-hotfix.yml
-          rm -f .github/workflows/force-finalize-chatgpt-hotfix.yml
-          rm -f .github/workflows/force-finalize-chatgpt-hotfix-ubuntu.yml
-          rm -f .github/workflows/publish-chatgpt-hotfix-source-branch.yml
-          rm -f .github/workflows/diagnose-publish-chatgpt-source.yml
-          git diff --check
-          python3 - <<'PY'
-          from pathlib import Path
           import subprocess
           expected = {
               'ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift',
@@ -78,28 +35,21 @@ jobs:
               'ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift',
               'project.yml',
           }
-          tracked = set(subprocess.check_output(
-              ['git', 'diff', '--name-only', 'ae271328f1eff79262d4b8095e459239031f0da9'],
-              text=True
-          ).splitlines())
-          untracked = set(subprocess.check_output(
-              ['git', 'ls-files', '--others', '--exclude-standard'],
-              text=True
-          ).splitlines())
-          actual = tracked | untracked
+          actual = set(subprocess.check_output([
+              'git', 'diff', '--name-only',
+              'ae271328f1eff79262d4b8095e459239031f0da9...HEAD'
+          ], text=True).splitlines())
           if actual != expected:
-              raise SystemExit(f'Unexpected source scope: {sorted(actual)}')
-          project = Path('project.yml').read_text()
-          if 'MARKETING_VERSION: "2.9.1"' not in project or 'CURRENT_PROJECT_VERSION: "74"' not in project:
-              raise SystemExit('2.9.1 build 74 missing')
+              raise SystemExit(f'Unexpected source scope before squash: {sorted(actual)}')
           PY
+          git diff --check ae271328f1eff79262d4b8095e459239031f0da9...HEAD
 
-      - name: Commit and publish clean source branch
+      - name: Squash onto exact build 73 head
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
+          git reset --soft ae271328f1eff79262d4b8095e459239031f0da9
           git commit -m "Fix ChatGPT map capture and live source pressure"
-          git push origin HEAD:refs/heads/agent/chatgpt-map-performance-source-v2
+          git push --force origin HEAD:agent/chatgpt-map-performance-source-v2
