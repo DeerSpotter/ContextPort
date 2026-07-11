@@ -278,6 +278,7 @@ final class ChatConversationExporter {
           const providerName = \#(providerNames)[0];
           const providerStartURL = \#(providerURLs)[0];
           const normalize = v => String(v || '').replace(/\u00a0/g,' ').replace(/\r\n?/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+          const normalizeMarkdown = v => String(v || '').replace(/\u00a0/g,' ').replace(/\r\n?/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
           const all = (root, selector) => { try { return Array.from(root.querySelectorAll(selector)); } catch { return []; } };
           const text = el => normalize(el ? (el.innerText || el.textContent || '') : '');
           const topLevel = items => items.filter((item, index) => !items.some((other, otherIndex) => otherIndex !== index && other.contains(item)));
@@ -319,8 +320,75 @@ final class ChatConversationExporter {
             all(clone, 'img,canvas,video,audio').forEach(media => media.replaceWith(document.createTextNode(`[${media.tagName.toLowerCase()}]`)));
             return text(clone);
           };
-          const pushTurn = (turns, seen, role, content) => {
-            const value = normalize(content);
+          const serializeDeepSeek = root => {
+            const noiseSelector = 'button,svg,style,script,textarea,input,[contenteditable=true],[aria-label*=Copy],[aria-label*=More],[data-testid*=copy],[class*=sr-only],[class*=visually-hidden]';
+            const blockDisplays = new Set(['block','flow-root','flex','grid','list-item','table','table-row-group','table-header-group','table-footer-group']);
+            const inlineFenceFor = code => '`'.repeat(((String(code).match(/`+/g) || []).reduce((m, r) => Math.max(m, r.length), 0)) + 1);
+            const renderList = (list, depth = 0) => {
+              const ordered = list.tagName === 'OL';
+              const start = Number.parseInt(list.getAttribute('start') || '1', 10) || 1;
+              return Array.from(list.children).filter(item => item.tagName === 'LI').map((item, index) => {
+                const content = Array.from(item.childNodes)
+                  .filter(node => !(node.nodeType === Node.ELEMENT_NODE && ['UL','OL'].includes(node.tagName)))
+                  .map(renderNode)
+                  .join('');
+                const prefix = ordered ? `${start + index}.` : '-';
+                const line = `${'  '.repeat(depth)}${prefix} ${normalizeMarkdown(content)}`;
+                const nested = Array.from(item.children)
+                  .filter(child => ['UL','OL'].includes(child.tagName))
+                  .map(child => renderList(child, depth + 1))
+                  .filter(Boolean)
+                  .join('\n');
+                return nested ? `${line}\n${nested}` : line;
+              }).join('\n');
+            };
+            const renderNode = node => {
+              if (node.nodeType === Node.TEXT_NODE) return String(node.nodeValue || '').replace(/\u00a0/g,' ');
+              if (node.nodeType !== Node.ELEMENT_NODE) return '';
+              const element = node;
+              if (element.matches?.(noiseSelector)) return '';
+              const tag = element.tagName.toLowerCase();
+              if (tag === 'br') return '\n';
+              if (tag === 'pre' || tag === 'code-block' || element.matches?.('[data-testid*=code-block]')) {
+                const code = (element.querySelector?.('code')?.innerText || element.innerText || element.textContent || '').replace(/\u00a0/g,' ').trimEnd();
+                const fence = fenceFor(code);
+                return `\n\n${fence}\n${code}\n${fence}\n\n`;
+              }
+              if (tag === 'table') return `\n\n${tableMD(element)}\n\n`;
+              if (tag === 'a') {
+                const href = String(element.href || element.getAttribute('href') || '').trim();
+                const label = normalizeMarkdown(renderChildren(element) || href).replace(/[\[\]]/g,'');
+                if (!href || /^(javascript|data|vbscript):/i.test(href)) return label;
+                return `[${label}](${href.replace(/\)/g,'%29')})`;
+              }
+              if (['img','canvas','video','audio'].includes(tag)) return `[${tag}]`;
+              if (/^h[1-6]$/.test(tag)) {
+                const level = Number(tag.slice(1));
+                return `\n\n${'#'.repeat(level)} ${normalizeMarkdown(renderChildren(element))}\n\n`;
+              }
+              if (tag === 'ul' || tag === 'ol') return `\n\n${renderList(element)}\n\n`;
+              if (tag === 'blockquote') {
+                const quote = normalizeMarkdown(renderChildren(element));
+                return `\n\n${quote.split('\n').map(line => `> ${line}`).join('\n')}\n\n`;
+              }
+              if (tag === 'hr') return '\n\n---\n\n';
+              if (tag === 'code') {
+                const code = String(element.innerText || element.textContent || '').replace(/\u00a0/g,' ');
+                const fence = inlineFenceFor(code);
+                return `${fence}${code}${fence}`;
+              }
+              if (tag === 'strong' || tag === 'b') return `**${normalizeMarkdown(renderChildren(element))}**`;
+              if (tag === 'em' || tag === 'i') return `*${normalizeMarkdown(renderChildren(element))}*`;
+              const content = renderChildren(element);
+              let display = '';
+              try { display = getComputedStyle(element).display; } catch (_) {}
+              return blockDisplays.has(display) ? `\n\n${content}\n\n` : content;
+            };
+            const renderChildren = node => Array.from(node.childNodes).map(renderNode).join('');
+            return normalizeMarkdown(renderChildren(root));
+          };
+          const pushTurn = (turns, seen, role, content, preserveMarkdown = false) => {
+            const value = preserveMarkdown ? normalizeMarkdown(content) : normalize(content);
             if (!['user','assistant'].includes(role) || value.length < 5 || value.length >= 300000 || isInterstitial(value)) return false;
             const key = `${role}:${value.slice(0,220)}`;
             if (seen.has(key)) return false;
@@ -450,15 +518,48 @@ final class ChatConversationExporter {
               )
             };
           };
-          const extractDeepSeek = () => ({
-            turns: [],
-            error: 'provider-capture-required',
-            diagnostics: diagnostics(
-              'deepseek-source-capture-required',
-              ['deepseek-positive-role-evidence'],
-              []
-            )
-          });
+          const extractDeepSeek = () => {
+            const rowSelector = '[data-virtual-list-item-key]';
+            const userWrapperSelector = '.ds-message.d29f3d7d';
+            const userBodySelector = '.fbb737a4';
+            const assistantBodySelector = '.ds-assistant-message-main-content';
+            const rows = topLevel(all(document, rowSelector));
+            const userBodies = topLevel(all(document, `${rowSelector} ${userWrapperSelector} ${userBodySelector}`));
+            const assistantBodies = topLevel(all(document, `${rowSelector} ${assistantBodySelector}`));
+            const expectedCanaries = ['virtual-list-item-key','deepseek-user-renderer','deepseek-assistant-content'];
+            const matchedCanaries = [];
+            if (rows.length > 0) matchedCanaries.push('virtual-list-item-key');
+            if (userBodies.length > 0) matchedCanaries.push('deepseek-user-renderer');
+            if (assistantBodies.length > 0) matchedCanaries.push('deepseek-assistant-content');
+
+            const turns = [], seen = new Set();
+            let unclassified = 0;
+            rows.forEach(row => {
+              const rowUserBodies = topLevel(all(row, `${userWrapperSelector} ${userBodySelector}`));
+              const rowAssistantBodies = topLevel(all(row, assistantBodySelector));
+              if (rowUserBodies.length > 0 && rowAssistantBodies.length === 0) {
+                const content = rowUserBodies.map(serializeDeepSeek).filter(Boolean).join('\n\n');
+                pushTurn(turns, seen, 'user', content, true);
+                return;
+              }
+              if (rowAssistantBodies.length > 0 && rowUserBodies.length === 0) {
+                const content = rowAssistantBodies.map(serializeDeepSeek).filter(Boolean).join('\n\n');
+                pushTurn(turns, seen, 'assistant', content, true);
+                return;
+              }
+              if (topLevel(all(row, '.ds-message')).length > 0 || text(row).length >= 5) unclassified += 1;
+            });
+            return {
+              turns,
+              diagnostics: diagnostics(
+                'deepseek-virtual-row-role-renderers',
+                expectedCanaries,
+                matchedCanaries,
+                false,
+                unclassified
+              )
+            };
+          };
           const extractGemini = () => {
             const turns = [], seen = new Set();
             const userSelector = 'user-query,[data-message-author-role="user"],[data-test-id="user-query"],[data-testid="user-query"]';
