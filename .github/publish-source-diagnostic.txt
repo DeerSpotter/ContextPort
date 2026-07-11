@@ -1,0 +1,30 @@
+decoded_patch_bytes= 35594
+decode_status=0
+/tmp/contextport_hotfix_patch.py:439: SyntaxWarning: invalid escape sequence '\('
+  '''            let parentURL = validated.candidate.parentSourceURL
+/tmp/contextport_hotfix_patch.py:465: SyntaxWarning: invalid escape sequence '\('
+  '''            let parentURL = validated.candidate.parentSourceURL
+ContextPort ChatGPT 2.9.1 hotfix patch applied
+patch_status=0
+Matched ChatGPT text-part serialization to the shipped frontend
+text_parts_status=0
+preclean_diff_status=0
+capture_script_found= True
+extract_status=0
+node_status=0
+postclean_diff_status=0
+changed_paths_begin
+ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift
+ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift
+ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift
+ChatGPTWebView/Developer/DeveloperSourcesModel.swift
+ChatGPTWebView/Web/ChatGPTConversationExporter.swift
+ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift
+ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift
+project.yml
+changed_paths_end
+scope_matches= False
+actual_paths= ['ChatGPTWebView/Developer/DeveloperSourceBrowserInventory.swift', 'ChatGPTWebView/Developer/DeveloperSourceMapRecovery.swift', 'ChatGPTWebView/Developer/DeveloperSourceMemoryArchive.swift', 'ChatGPTWebView/Developer/DeveloperSourcesModel.swift', 'ChatGPTWebView/Web/ChatGPTConversationExporter.swift', 'ChatGPTWebView/Web/ChatGPTWebViewChatPerformance.swift', 'ChatGPTWebView/Web/ChatGPTWebViewLatestExchange.swift', 'project.yml']
+version_2_9_1= True
+build_74= True
+scope_probe_status=0
