@@ -156,7 +156,11 @@ final class DeveloperSourceBoundedRequest: NSObject, URLSessionDataDelegate {
         if expectedLength != NSURLSessionTransferSizeUnknown,
            expectedLength > Int64(maximumBytes) {
             completionHandler(.cancel)
-            finish(.failure(.responseTooLarge(Int(expectedLength))))
+            finish(
+                .failure(
+                    DeveloperSourceBoundedLoadError.responseTooLarge(Int(expectedLength))
+                )
+            )
             return
         }
 
@@ -181,7 +185,11 @@ final class DeveloperSourceBoundedRequest: NSObject, URLSessionDataDelegate {
         guard nextCount <= maximumBytes else {
             lock.unlock()
             dataTask.cancel()
-            finish(.failure(.responseTooLarge(nextCount)))
+            finish(
+                .failure(
+                    DeveloperSourceBoundedLoadError.responseTooLarge(nextCount)
+                )
+            )
             return
         }
 
@@ -209,7 +217,7 @@ final class DeveloperSourceBoundedRequest: NSObject, URLSessionDataDelegate {
         lock.unlock()
 
         guard let response else {
-            finish(.failure(.missingResponse))
+            finish(.failure(DeveloperSourceBoundedLoadError.missingResponse))
             return
         }
 
