@@ -14,6 +14,10 @@ struct AIChatTabView: View {
     @State private var isKeyboardVisible = false
     @State private var isShowingSaveContextOptions = false
     @State private var isShowingMemoryRevisionPicker = false
+    @State private var isShowingNewMemoryNameEditor = false
+    @State private var pendingNewMemoryExport: ChatConversationExportResult?
+    @State private var pendingNewMemoryName = ""
+    @State private var detectedNewMemoryName = ""
     @State private var pendingPasteContextText: String?
     @State private var pendingAttachFileURLs: [URL] = []
     @State private var pendingPasteContextID = UUID()
@@ -101,7 +105,7 @@ struct AIChatTabView: View {
         ) {
             ForEach(sourceMemoryEntries) { entry in
                 Button("Add Revision to \"\(entry.title)\"") {
-                    saveCurrentChatToMemory(destination: .revision(entry))
+                    saveCurrentChatAsRevision(to: entry)
                 }
             }
 
@@ -112,7 +116,7 @@ struct AIChatTabView: View {
             }
 
             Button("Save as New Memory") {
-                saveCurrentChatToMemory(destination: .newMemory)
+                prepareNewMemorySave()
             }
 
             Button("Cancel", role: .cancel) {}
@@ -122,8 +126,16 @@ struct AIChatTabView: View {
         .sheet(isPresented: $isShowingMemoryRevisionPicker) {
             MemoryRevisionDestinationPicker(entries: appModel.localMemoryEntries) { entry in
                 isShowingMemoryRevisionPicker = false
-                saveCurrentChatToMemory(destination: .revision(entry))
+                saveCurrentChatAsRevision(to: entry)
             }
+        }
+        .sheet(isPresented: $isShowingNewMemoryNameEditor) {
+            NewMemoryNameEditor(
+                detectedChatName: detectedNewMemoryName,
+                memoryName: $pendingNewMemoryName,
+                onSave: savePendingNewMemory,
+                onCancel: cancelPendingNewMemorySave
+            )
         }
     }
 
@@ -356,62 +368,166 @@ struct AIChatTabView: View {
         isShowingSaveContextOptions = true
     }
 
-    private func saveCurrentChatToMemory(destination: MemorySaveDestination) {
+    private func prepareNewMemorySave() {
         guard !isSavingContext else { return }
         isSavingContext = true
-
-        switch destination {
-        case .newMemory:
-            appModel.statusMessage = "Saving \(provider.displayName) chat as a new Memory..."
-        case .revision(let memory):
-            appModel.statusMessage = "Adding a new revision to \"\(memory.title)\"..."
-        }
+        appModel.statusMessage = "Reading \(provider.displayName) chat before naming the new Memory..."
 
         Task { @MainActor in
             defer { isSavingContext = false }
             do {
                 let export = try await webViewStore.exportCurrentConversation()
-                let store = LocalMemoryStore()
-                let result: LocalMemorySaveResult
+                let chatName = export.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackName = "\(provider.displayName) Conversation"
 
-                switch destination {
-                case .newMemory:
-                    result = try store.saveExportedConversation(
-                        projectName: appModel.selectedProject?.name ?? "ContextPort",
-                        title: export.title,
-                        markdownText: export.markdown,
-                        pdfData: export.pdfData,
-                        sourceURL: export.sourceURL,
-                        messageCount: export.messageCount,
-                        exportedAt: export.exportedAt
-                    )
-                case .revision(let memory):
-                    result = try store.addRevision(
-                        to: memory,
-                        markdownText: export.markdown,
-                        pdfData: export.pdfData,
-                        sourceURL: export.sourceURL,
-                        messageCount: export.messageCount,
-                        exportedAt: export.exportedAt
-                    )
-                }
+                pendingNewMemoryExport = export
+                detectedNewMemoryName = chatName.isEmpty ? fallbackName : chatName
+                pendingNewMemoryName = detectedNewMemoryName
+                isShowingNewMemoryNameEditor = true
+                appModel.statusMessage = "Choose a name for the new Memory. The existing chat name is prefilled."
+            } catch {
+                clearPendingNewMemorySave()
+                appModel.statusMessage = "Save Context failed: \(error.localizedDescription)"
+            }
+        }
+    }
 
-                sourceMemoryIDs = [result.entry.id]
-                sourceMemorySessionID = activeSessionID
-                appModel.reloadLocalMemory()
-                appModel.statusMessage = result.message
+    private func savePendingNewMemory(_ requestedName: String) {
+        guard !isSavingContext, let export = pendingNewMemoryExport else { return }
+
+        let trimmedName = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detectedName = detectedNewMemoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmedName.isEmpty
+            ? (detectedName.isEmpty ? "\(provider.displayName) Conversation" : detectedName)
+            : trimmedName
+
+        isShowingNewMemoryNameEditor = false
+        isSavingContext = true
+        appModel.statusMessage = "Saving \"\(finalName)\" as a new Memory..."
+
+        Task { @MainActor in
+            defer { isSavingContext = false }
+            do {
+                let result = try LocalMemoryStore().saveExportedConversation(
+                    projectName: appModel.selectedProject?.name ?? "ContextPort",
+                    title: finalName,
+                    markdownText: export.markdown,
+                    pdfData: export.pdfData,
+                    sourceURL: export.sourceURL,
+                    messageCount: export.messageCount,
+                    exportedAt: export.exportedAt
+                )
+
+                clearPendingNewMemorySave()
+                finishMemorySave(result)
+            } catch {
+                isShowingNewMemoryNameEditor = true
+                appModel.statusMessage = "Save Context failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func cancelPendingNewMemorySave() {
+        isShowingNewMemoryNameEditor = false
+        clearPendingNewMemorySave()
+        appModel.statusMessage = "New Memory save cancelled."
+    }
+
+    private func clearPendingNewMemorySave() {
+        pendingNewMemoryExport = nil
+        pendingNewMemoryName = ""
+        detectedNewMemoryName = ""
+    }
+
+    private func saveCurrentChatAsRevision(to memory: LocalMemoryEntry) {
+        guard !isSavingContext else { return }
+        isSavingContext = true
+        appModel.statusMessage = "Adding a new revision to \"\(memory.title)\"..."
+
+        Task { @MainActor in
+            defer { isSavingContext = false }
+            do {
+                let export = try await webViewStore.exportCurrentConversation()
+                let result = try LocalMemoryStore().addRevision(
+                    to: memory,
+                    markdownText: export.markdown,
+                    pdfData: export.pdfData,
+                    sourceURL: export.sourceURL,
+                    messageCount: export.messageCount,
+                    exportedAt: export.exportedAt
+                )
+                finishMemorySave(result)
             } catch {
                 appModel.statusMessage = "Save Context failed: \(error.localizedDescription)"
             }
         }
     }
+
+    private func finishMemorySave(_ result: LocalMemorySaveResult) {
+        sourceMemoryIDs = [result.entry.id]
+        sourceMemorySessionID = activeSessionID
+        appModel.reloadLocalMemory()
+        appModel.statusMessage = result.message
+    }
 }
 
 typealias ChatGPTTabView = AIChatTabView
 
-private enum MemorySaveDestination {
-    case newMemory
-    case revision(LocalMemoryEntry)
+
+private struct NewMemoryNameEditor: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let detectedChatName: String
+    @Binding var memoryName: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    private var trimmedName: String {
+        memoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Memory Name") {
+                    TextField("Memory name", text: $memoryName)
+                        .textInputAutocapitalization(.sentences)
+                        .submitLabel(.done)
+
+                    Button("Use Chat Name") {
+                        memoryName = detectedChatName
+                    }
+                    .disabled(memoryName == detectedChatName)
+                }
+
+                Section("Existing Chat Name") {
+                    Text(detectedChatName)
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .navigationTitle("Name New Memory")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled()
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                        onCancel()
+                    }
+                }
+
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save Memory") {
+                        let name = trimmedName
+                        dismiss()
+                        onSave(name)
+                    }
+                    .disabled(trimmedName.isEmpty)
+                }
+            }
+        }
+    }
 }
 
 private struct MemoryRevisionDestinationPicker: View {
