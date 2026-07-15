@@ -15,6 +15,21 @@ ChatGPT
 
 The AI can change. Your context does not have to.
 
+## Latest release: ContextPort 2.10.4 (Build 83)
+
+ContextPort 2.10.4 improves ChatGPT Work sessions, especially long conversations that previously became difficult or impossible to navigate.
+
+### ChatGPT scrolling and performance
+
+- Restores reliable vertical scrolling in long ChatGPT conversations.
+- Prevents the entire conversation from dragging like a single image.
+- Locks horizontal movement to stop sideways drifting and flickering during diagonal swipes.
+- Adds recovery handling for ChatGPT Work sessions that remain stuck while loading.
+- Preserves the existing ChatGPT login, cookies, and saved ContextPort Memory during recovery.
+- Removes the broken ChatGPT message windowing behavior that interfered with the current ChatGPT layout.
+
+Long ChatGPT conversations now feel noticeably snappier and more responsive. Scrolling begins faster, touch movement feels more natural, and the conversation no longer stalls while older messages are being managed in the background.
+
 ## Release IPA build provenance
 
 The IPA files attached to this repository's GitHub Releases come from successful GitHub Actions workflow builds.
