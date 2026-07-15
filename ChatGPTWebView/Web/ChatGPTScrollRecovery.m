@@ -35,15 +35,16 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
     UIScrollView *scrollView = self.scrollView;
     scrollView.scrollEnabled = YES;
     scrollView.userInteractionEnabled = YES;
-    scrollView.directionalLockEnabled = NO;
+    scrollView.directionalLockEnabled = YES;
     scrollView.panGestureRecognizer.enabled = YES;
     scrollView.delaysContentTouches = NO;
 
     // ChatGPT scrolls inside its own DOM container. Prevent WKWebView's outer
-    // scroll view from rubber banding the entire page like a single image.
+    // scroll view from rubber banding or drifting horizontally.
     scrollView.bounces = NO;
     scrollView.alwaysBounceVertical = NO;
     scrollView.alwaysBounceHorizontal = NO;
+    scrollView.showsHorizontalScrollIndicator = NO;
 }
 
 - (void)cp_installChatGPTScrollRecoveryScriptIfNeeded {
@@ -101,10 +102,15 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
             "}"
             "if (!best) return false;"
             "best.style.setProperty('overflow-y', 'auto', 'important');"
+            "best.style.setProperty('overflow-x', 'hidden', 'important');"
             "best.style.setProperty('-webkit-overflow-scrolling', 'touch', 'important');"
             "best.style.setProperty('touch-action', 'pan-y', 'important');"
             "best.style.setProperty('overscroll-behavior-y', 'contain', 'important');"
+            "best.style.setProperty('overscroll-behavior-x', 'none', 'important');"
+            "best.scrollLeft = 0;"
+            "document.documentElement.style.setProperty('overflow-x', 'hidden', 'important');"
             "document.documentElement.style.setProperty('overscroll-behavior', 'none', 'important');"
+            "document.body?.style.setProperty('overflow-x', 'hidden', 'important');"
             "document.body?.style.setProperty('overscroll-behavior', 'none', 'important');"
             "return true;"
           "};"
