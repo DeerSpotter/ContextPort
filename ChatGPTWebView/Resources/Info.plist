@@ -37,6 +37,8 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Microphone access is used only when ContextPort web voice input requests it.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>ContextPort needs permission to save images you choose from AI conversations to your Photos library.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Speech recognition is used only when ContextPort web voice input requests it.</string>
     <key>UIApplicationSupportsIndirectInputEvents</key>
