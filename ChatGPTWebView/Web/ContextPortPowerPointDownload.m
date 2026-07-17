@@ -29,6 +29,45 @@ static BOOL CPIsPowerPointMIMEType(NSString *mimeType) {
            [value isEqualToString:@"application/vnd.ms-powerpoint"];
 }
 
+static NSString *CPPreferredExtensionForMIMEType(NSString *mimeType) {
+    NSString *value = mimeType.lowercaseString;
+    if ([value isEqualToString:@"image/png"]) return @"png";
+    if ([value isEqualToString:@"image/jpeg"] || [value isEqualToString:@"image/jpg"]) return @"jpg";
+    if ([value isEqualToString:@"image/webp"]) return @"webp";
+    if ([value isEqualToString:@"image/gif"]) return @"gif";
+    if ([value isEqualToString:@"image/heic"] || [value isEqualToString:@"image/heif"]) return @"heic";
+    if ([value isEqualToString:@"image/avif"]) return @"avif";
+    if ([value containsString:@"presentationml"]) return @"pptx";
+    if ([value containsString:@"ms-powerpoint"]) return @"ppt";
+    if ([value isEqualToString:@"application/pdf"]) return @"pdf";
+    if ([value isEqualToString:@"text/plain"]) return @"txt";
+    return nil;
+}
+
+static NSString *CPSafeDownloadFilename(NSURLResponse *response, NSString *suggestedFilename) {
+    NSString *filename = [suggestedFilename stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (filename.length == 0) {
+        filename = response.URL.lastPathComponent;
+    }
+    if (filename.length == 0 || [filename isEqualToString:@"download"]) {
+        filename = @"ContextPort Download";
+    }
+
+    filename = [[[[filename stringByReplacingOccurrencesOfString:@"/" withString:@"_"]
+                  stringByReplacingOccurrencesOfString:@":" withString:@"_"]
+                 stringByReplacingOccurrencesOfString:@"\\" withString:@"_"]
+                stringByReplacingOccurrencesOfString:@"\0" withString:@""];
+
+    if (filename.pathExtension.length == 0) {
+        NSString *extension = CPPreferredExtensionForMIMEType(response.MIMEType);
+        if (extension.length > 0) {
+            filename = [filename stringByAppendingPathExtension:extension];
+        }
+    }
+
+    return filename;
+}
+
 static UIViewController *CPTopViewController(UIViewController *root) {
     if ([root isKindOfClass:[UINavigationController class]]) {
         return CPTopViewController(((UINavigationController *)root).visibleViewController);
@@ -36,11 +75,100 @@ static UIViewController *CPTopViewController(UIViewController *root) {
     if ([root isKindOfClass:[UITabBarController class]]) {
         return CPTopViewController(((UITabBarController *)root).selectedViewController);
     }
-    if (root.presentedViewController) {
+    if (root.presentedViewController && !root.presentedViewController.isBeingDismissed) {
         return CPTopViewController(root.presentedViewController);
     }
     return root;
 }
+
+static UIWindow *CPKeyWindow(void) {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        if (scene.activationState != UISceneActivationStateForegroundActive &&
+            scene.activationState != UISceneActivationStateForegroundInactive) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow) return window;
+        }
+    }
+    return nil;
+}
+
+@interface CPDownloadExportPresenter : NSObject <UIDocumentPickerDelegate>
+@property (nonatomic, strong) NSMutableArray<NSURL *> *pendingURLs;
+@property (nonatomic, assign) BOOL presenting;
++ (instancetype)sharedPresenter;
+- (void)enqueueURL:(NSURL *)url;
+@end
+
+@implementation CPDownloadExportPresenter
+
++ (instancetype)sharedPresenter {
+    static CPDownloadExportPresenter *presenter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        presenter = [[CPDownloadExportPresenter alloc] init];
+        presenter.pendingURLs = [NSMutableArray array];
+    });
+    return presenter;
+}
+
+- (void)enqueueURL:(NSURL *)url {
+    if (!url) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.pendingURLs addObject:url];
+        [self presentNextWhenPossible];
+    });
+}
+
+- (void)presentNextWhenPossible {
+    if (self.presenting || self.pendingURLs.count == 0) return;
+
+    UIWindow *window = CPKeyWindow();
+    UIViewController *presenter = CPTopViewController(window.rootViewController);
+    if (!window || !presenter || !presenter.viewIfLoaded.window || presenter.isBeingPresented || presenter.isBeingDismissed) {
+        [self retrySoon];
+        return;
+    }
+
+    if ([presenter isKindOfClass:[UIDocumentPickerViewController class]] ||
+        [presenter isKindOfClass:[UIAlertController class]]) {
+        [self retrySoon];
+        return;
+    }
+
+    NSURL *url = self.pendingURLs.firstObject;
+    [self.pendingURLs removeObjectAtIndex:0];
+
+    if (![[NSFileManager defaultManager] fileExistsAtPath:url.path]) {
+        [self presentNextWhenPossible];
+        return;
+    }
+
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initForExportingURLs:@[url]
+        asCopy:YES];
+    picker.delegate = self;
+    self.presenting = YES;
+    [presenter presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)retrySoon {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self presentNextWhenPossible];
+    });
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    self.presenting = NO;
+    [self presentNextWhenPossible];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    self.presenting = NO;
+    [self presentNextWhenPossible];
+}
+
+@end
 
 @interface CPDownloadNavigationDelegateProxy : NSObject <WKNavigationDelegate, WKDownloadDelegate>
 @property (nonatomic, weak) id<WKNavigationDelegate> forwardingDelegate;
@@ -56,7 +184,7 @@ static UIViewController *CPTopViewController(UIViewController *root) {
     if (self) {
         _forwardingDelegate = delegate;
         _webView = webView;
-        _destinations = [NSMapTable weakToStrongObjectsMapTable];
+        _destinations = [NSMapTable strongToStrongObjectsMapTable];
     }
     return self;
 }
@@ -125,12 +253,7 @@ static UIViewController *CPTopViewController(UIViewController *root) {
  decideDestinationUsingResponse:(NSURLResponse *)response
  suggestedFilename:(NSString *)suggestedFilename
  completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler API_AVAILABLE(ios(14.5)) {
-    NSString *filename = [suggestedFilename stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (filename.length == 0) {
-        filename = CPIsPowerPointMIMEType(response.MIMEType) ? @"ContextPort Download.pptx" : @"ContextPort Download.ppt";
-    }
-    filename = [[filename stringByReplacingOccurrencesOfString:@"/" withString:@"_"]
-                stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+    NSString *filename = CPSafeDownloadFilename(response, suggestedFilename);
 
     NSURL *folder = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]
                               isDirectory:YES];
@@ -139,7 +262,7 @@ static UIViewController *CPTopViewController(UIViewController *root) {
                              withIntermediateDirectories:YES
                                               attributes:nil
                                                    error:&error];
-    if (error) {
+    if (error || filename.length == 0) {
         completionHandler(nil);
         return;
     }
@@ -154,27 +277,7 @@ static UIViewController *CPTopViewController(UIViewController *root) {
     [self.destinations removeObjectForKey:download];
     if (!destination) return;
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = nil;
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (window.isKeyWindow) {
-                    keyWindow = window;
-                    break;
-                }
-            }
-            if (keyWindow) break;
-        }
-
-        UIViewController *presenter = CPTopViewController(keyWindow.rootViewController);
-        if (!presenter) return;
-
-        UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-            initForExportingURLs:@[destination]
-            asCopy:YES];
-        [presenter presentViewController:picker animated:YES completion:nil];
-    });
+    [[CPDownloadExportPresenter sharedPresenter] enqueueURL:destination];
 }
 
 - (void)download:(WKDownload *)download
