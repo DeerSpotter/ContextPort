@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WebKit
 
 private struct AIProfileSessionKey: Hashable {
@@ -7,9 +8,34 @@ private struct AIProfileSessionKey: Hashable {
 }
 
 @MainActor
-final class ChatGPTProfileSessionPool: ObservableObject {
+final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
     private var stores: [AIProfileSessionKey: ChatGPTWebViewStore] = [:]
     private var chatPerformanceConfiguration: ChatPerformanceConfiguration = .disabled
+    private let sessionURLCheckpoint = ChatGPTSessionURLCheckpoint()
+
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(checkpointSessionsBeforeSuspension),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(checkpointSessionsBeforeSuspension),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func checkpointSessionsBeforeSuspension() {
+        checkpointAllSessionURLs()
+    }
 
     // ChatGPT compatibility surface for existing callers.
     func store(
@@ -101,7 +127,13 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             webViewProfile = profile
         }
 
-        let initialURL = profile.kind == .saved ? provider.loginURL : nil
+        let checkpointURL = validatedCheckpointURL(
+            provider: provider,
+            isGuestProfile: profile.kind == .guest,
+            storageProfileID: storageProfileID,
+            browserStateVault: browserStateVault
+        )
+        let initialURL = checkpointURL ?? (profile.kind == .saved ? provider.loginURL : nil)
         let store = ChatGPTWebViewStore(
             provider: provider,
             initialURL: initialURL,
@@ -126,6 +158,15 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             chatPerformanceConfiguration.chatGPTMobileWebFallbackEnabled
         )
         stores[key] = store
+
+        if let checkpointURL {
+            enforceCheckpointAfterInitialSessionRestore(
+                checkpointURL,
+                store: store,
+                key: key
+            )
+        }
+
         return store
     }
 
@@ -167,13 +208,21 @@ final class ChatGPTProfileSessionPool: ObservableObject {
         }
     }
 
+    func checkpointAllSessionURLs() {
+        for (key, store) in stores {
+            checkpointSessionURL(key: key, store: store)
+        }
+    }
+
     func persistSession(providerID: AIProviderID, profileID: String) async {
         let key = AIProfileSessionKey(providerID: providerID, profileID: profileID)
         guard let store = stores[key] else { return }
+        checkpointSessionURL(key: key, store: store)
         await store.persistProfileSession()
     }
 
     func persistAllSessions() async {
+        checkpointAllSessionURLs()
         for store in stores.values {
             await store.persistProfileSession()
         }
@@ -191,6 +240,7 @@ final class ChatGPTProfileSessionPool: ObservableObject {
     func removeSavedProfileSession(providerID: AIProviderID, profileID: String) async {
         let key = AIProfileSessionKey(providerID: providerID, profileID: profileID)
         let storageProfileID = "\(providerID.rawValue)::\(profileID)"
+        sessionURLCheckpoint.delete(profileID: storageProfileID)
 
         guard let store = stores.removeValue(forKey: key) else {
             let cookieVault = ChatGPTProfileCookieVault()
@@ -218,5 +268,75 @@ final class ChatGPTProfileSessionPool: ObservableObject {
             onDetectedDisplayName: onDetectedDisplayName
         )
         await store.resetGuestSession()
+    }
+
+    private func checkpointSessionURL(
+        key: AIProfileSessionKey,
+        store: ChatGPTWebViewStore
+    ) {
+        guard let url = store.webView.url,
+              store.provider.isAuthenticatedContentURL(url) else {
+            return
+        }
+
+        let storageProfileID = "\(key.providerID.rawValue)::\(key.profileID)"
+        sessionURLCheckpoint.save(url, profileID: storageProfileID)
+    }
+
+    private func validatedCheckpointURL(
+        provider: AIProvider,
+        isGuestProfile: Bool,
+        storageProfileID: String,
+        browserStateVault: ChatGPTProfileBrowserStateVault
+    ) -> URL? {
+        guard !isGuestProfile else {
+            return nil
+        }
+
+        guard browserStateVault.shouldRestoreSession(profileID: storageProfileID) else {
+            sessionURLCheckpoint.delete(profileID: storageProfileID)
+            return nil
+        }
+
+        guard let url = sessionURLCheckpoint.url(profileID: storageProfileID) else {
+            return nil
+        }
+
+        guard provider.isAuthenticatedContentURL(url) else {
+            sessionURLCheckpoint.delete(profileID: storageProfileID)
+            return nil
+        }
+
+        return url
+    }
+
+    private func enforceCheckpointAfterInitialSessionRestore(
+        _ checkpointURL: URL,
+        store: ChatGPTWebViewStore,
+        key: AIProfileSessionKey
+    ) {
+        Task { @MainActor [weak self, weak store] in
+            try? await Task.sleep(nanoseconds: 1_250_000_000)
+            guard let self,
+                  let store,
+                  self.stores[key] === store else {
+                return
+            }
+
+            guard store.provider.isAuthenticatedContentURL(checkpointURL) else {
+                return
+            }
+
+            let currentURL = store.webView.url
+            guard currentURL?.absoluteString != checkpointURL.absoluteString else {
+                return
+            }
+
+            // This task exists only for a newly created store. It lets the existing
+            // cookie restore begin first, then makes the fast URL checkpoint authoritative
+            // when the slower browser-state snapshot still points at an older page.
+            store.webView.stopLoading()
+            store.webView.load(URLRequest(url: checkpointURL))
+        }
     }
 }
