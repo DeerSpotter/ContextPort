@@ -36,6 +36,12 @@ final class ChatGPTSessionURLCheckpoint {
         defaults.removeObject(forKey: key(for: profileID))
     }
 
+    func deleteAll() {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(keyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
     private func key(for profileID: String) -> String {
         let encoded = Data(profileID.utf8)
             .base64EncodedString()

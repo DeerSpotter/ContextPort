@@ -351,8 +351,10 @@ private struct CompactTabButton: View {
 private struct SettingsView: View {
     @ObservedObject var updateChecker: AppUpdateChecker
     @EnvironmentObject private var providerManager: AIProviderManager
+    @EnvironmentObject private var profileSessionPool: ChatGPTProfileSessionPool
     @EnvironmentObject private var launchSettings: MemoryLaunchSettings
     @EnvironmentObject private var chatPerformanceSettings: ChatPerformanceSettings
+    @AppStorage(ChatGPTProfileSessionPool.restoreLastChatDefaultsKey) private var restoreLastChatEnabled = true
     @AppStorage("developerModeEnabled") private var developerModeEnabled = false
     @Environment(\.dismiss) private var dismiss
 
@@ -447,6 +449,19 @@ private struct SettingsView: View {
                             Text(format.displayName).tag(format)
                         }
                     }
+                }
+
+                Section {
+                    Toggle(isOn: $restoreLastChatEnabled) {
+                        Label("Restore Last Chat", systemImage: "clock.arrow.circlepath")
+                    }
+                    .onChange(of: restoreLastChatEnabled) { isEnabled in
+                        profileSessionPool.updateRestoreLastChatEnabled(isEnabled)
+                    }
+                } header: {
+                    Text("Startup")
+                } footer: {
+                    Text("When off, ContextPort keeps your account sign-ins but opens each AI at its home page the next time the app starts. The currently open chat remains open until you leave it or close the app.")
                 }
 
                 Section {

@@ -160,6 +160,31 @@ final class ChatGPTProfileBrowserStateVault {
         """
     }
 
+    func clearAllLastURLs() {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for url in files where url.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  var state = try? JSONDecoder().decode(ChatGPTProfileBrowserState.self, from: data),
+                  state.lastURL != nil else {
+                continue
+            }
+
+            state.lastURL = nil
+            guard let updatedData = try? JSONEncoder().encode(state) else { continue }
+            try? updatedData.write(
+                to: url,
+                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+            )
+        }
+    }
+
     func delete(profileID: String) {
         try? fileManager.removeItem(at: fileURL(profileID: profileID))
     }

@@ -9,12 +9,27 @@ private struct AIProfileSessionKey: Hashable {
 
 @MainActor
 final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
+    static let restoreLastChatDefaultsKey = "restoreLastChatEnabled"
+
     private var stores: [AIProfileSessionKey: ChatGPTWebViewStore] = [:]
     private var chatPerformanceConfiguration: ChatPerformanceConfiguration = .disabled
     private let sessionURLCheckpoint = ChatGPTSessionURLCheckpoint()
+    private var restoreLastChatEnabled: Bool
 
     override init() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.restoreLastChatDefaultsKey) == nil {
+            restoreLastChatEnabled = true
+        } else {
+            restoreLastChatEnabled = defaults.bool(forKey: Self.restoreLastChatDefaultsKey)
+        }
+
         super.init()
+
+        if !restoreLastChatEnabled {
+            clearSavedSessionURLs()
+        }
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(checkpointSessionsBeforeSuspension),
@@ -103,7 +118,8 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         // Reject a previously captured provider URL when the full authenticated URL rule
         // no longer accepts it. This clears stale Claude help/support routes without
         // discarding the provider cookie snapshot that may still contain a valid login.
-        if profile.kind != .guest,
+        if restoreLastChatEnabled,
+           profile.kind != .guest,
            let restoredURL = browserStateVault.lastURL(
             profileID: storageProfileID,
             allowedHostSuffixes: provider.authenticatedHostSuffixes
@@ -183,6 +199,19 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         }
     }
 
+    func updateRestoreLastChatEnabled(_ isEnabled: Bool) {
+        guard restoreLastChatEnabled != isEnabled else { return }
+
+        restoreLastChatEnabled = isEnabled
+        UserDefaults.standard.set(isEnabled, forKey: Self.restoreLastChatDefaultsKey)
+
+        if isEnabled {
+            checkpointAllSessionURLs()
+        } else {
+            clearSavedSessionURLs()
+        }
+    }
+
     func developerSourceSessions() -> [DeveloperWebViewSession] {
         stores.compactMap { key, store in
             guard store.webView.url != nil else { return nil }
@@ -209,6 +238,8 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
     }
 
     func checkpointAllSessionURLs() {
+        guard restoreLastChatEnabled else { return }
+
         for (key, store) in stores {
             checkpointSessionURL(key: key, store: store)
         }
@@ -219,12 +250,18 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         guard let store = stores[key] else { return }
         checkpointSessionURL(key: key, store: store)
         await store.persistProfileSession()
+        if !restoreLastChatEnabled {
+            clearSavedSessionURLs()
+        }
     }
 
     func persistAllSessions() async {
         checkpointAllSessionURLs()
         for store in stores.values {
             await store.persistProfileSession()
+        }
+        if !restoreLastChatEnabled {
+            clearSavedSessionURLs()
         }
     }
 
@@ -274,7 +311,8 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         key: AIProfileSessionKey,
         store: ChatGPTWebViewStore
     ) {
-        guard let url = store.webView.url,
+        guard restoreLastChatEnabled,
+              let url = store.webView.url,
               store.provider.isAuthenticatedContentURL(url) else {
             return
         }
@@ -289,7 +327,7 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         storageProfileID: String,
         browserStateVault: ChatGPTProfileBrowserStateVault
     ) -> URL? {
-        guard !isGuestProfile else {
+        guard restoreLastChatEnabled, !isGuestProfile else {
             return nil
         }
 
@@ -310,6 +348,11 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         return url
     }
 
+    private func clearSavedSessionURLs() {
+        sessionURLCheckpoint.deleteAll()
+        ChatGPTProfileBrowserStateVault().clearAllLastURLs()
+    }
+
     private func enforceCheckpointAfterInitialSessionRestore(
         _ checkpointURL: URL,
         store: ChatGPTWebViewStore,
@@ -318,6 +361,7 @@ final class ChatGPTProfileSessionPool: NSObject, ObservableObject {
         Task { @MainActor [weak self, weak store] in
             try? await Task.sleep(nanoseconds: 1_250_000_000)
             guard let self,
+                  self.restoreLastChatEnabled,
                   let store,
                   self.stores[key] === store else {
                 return
