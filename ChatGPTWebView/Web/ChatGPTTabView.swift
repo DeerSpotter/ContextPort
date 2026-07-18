@@ -34,8 +34,8 @@ struct AIChatTabView: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
             if !isKeyboardVisible {
-                HStack(spacing: 10) {
-                    Button(contextButtonTitle) {
+                HStack(spacing: 4) {
+                    Button {
                         if let pendingPasteContextText {
                             pastePendingContext(pendingPasteContextText)
                         } else if !pendingAttachFileURLs.isEmpty {
@@ -43,30 +43,57 @@ struct AIChatTabView: View {
                         } else {
                             presentSaveContextChoices()
                         }
+                    } label: {
+                        Text(contextButtonTitle)
+                            .font(.caption2.weight(.semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .fixedSize(horizontal: true, vertical: false)
                     .disabled(isSavingContext || isPastingContext || isAttachingFiles)
 
-                    CircleIconButton(
-                        systemImage: "stop.circle",
-                        accessibilityLabel: "Stop \(provider.displayName) activity",
-                        accessibilityHint: "Stops current WebView activity",
-                        foregroundColor: .primary
-                    ) {
-                        webViewStore.stopCurrentActivity()
-                    }
+                    Menu {
+                        Button {
+                            hardRefreshCurrentSession()
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(isHardRefreshing)
 
-                    CircleIconButton(
-                        systemImage: "arrow.clockwise",
-                        accessibilityLabel: "Hard refresh \(provider.displayName) session",
-                        accessibilityHint: "Leaves and reloads the current AI page while preserving the active session",
-                        foregroundColor: isHardRefreshing ? .red : .primary
-                    ) {
-                        hardRefreshCurrentSession()
+                        Button {
+                            webViewStore.stopCurrentActivity()
+                            appModel.statusMessage = "Stopped current \(provider.displayName) activity."
+                        } label: {
+                            Label("Stop", systemImage: "stop.circle")
+                        }
+
+                        Button {
+                            webViewStore.scrollCurrentConversationToBottom()
+                            appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
+                        } label: {
+                            Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 30, height: 30)
                     }
+                    .buttonStyle(.plain)
+                    .foregroundColor(isHardRefreshing ? .red : .primary)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(Circle().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                    .accessibilityLabel("Page controls")
+                    .accessibilityHint("Opens refresh, stop, and scroll to bottom actions")
                 }
-                .padding(.top, 12)
-                .padding(.horizontal, 12)
+                .padding(4)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(0.10), lineWidth: 1))
+                .shadow(radius: 2)
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .onAppear {
@@ -580,28 +607,5 @@ private struct MemoryRevisionDestinationPicker: View {
     private func revisionLabel(for entry: LocalMemoryEntry) -> String {
         let noun = entry.revisionCount == 1 ? "revision" : "revisions"
         return "\(entry.revisionCount) \(noun)"
-    }
-}
-
-private struct CircleIconButton: View {
-    let systemImage: String
-    let accessibilityLabel: String
-    let accessibilityHint: String
-    let foregroundColor: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
-                .frame(width: 36, height: 36)
-        }
-        .buttonStyle(.plain)
-        .foregroundColor(foregroundColor)
-        .background(.ultraThinMaterial, in: Circle())
-        .overlay(Circle().stroke(Color.primary.opacity(0.12), lineWidth: 1))
-        .shadow(radius: 2)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint(accessibilityHint)
     }
 }
