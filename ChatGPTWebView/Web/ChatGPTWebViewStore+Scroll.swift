@@ -6,18 +6,27 @@ extension ChatGPTWebViewStore {
     func scrollCurrentConversationToBottom() {
         let script = #"""
         (() => {
+          try {
+            if (typeof window.__contextPortScrollToBottom === 'function') {
+              const followed = window.__contextPortScrollToBottom();
+              if (followed) return true;
+            }
+          } catch (_) {}
+
           const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
           const candidates = [
             document.scrollingElement,
             document.documentElement,
             document.body,
-            ...Array.from(document.querySelectorAll('*'))
+            ...Array.from(document.querySelectorAll(
+              'main, [role="main"], [data-scroll-root], [class*="overflow-y-auto"], [class*="overflow-y-scroll"], [style*="overflow-y"]'
+            ))
           ].filter(Boolean);
 
           var best = null;
           var bestScore = 0;
 
-          for (const element of candidates) {
+          for (const element of Array.from(new Set(candidates))) {
             if (!(element instanceof Element)) continue;
 
             const overflow = Math.max(0, element.scrollHeight - element.clientHeight);
@@ -54,13 +63,14 @@ extension ChatGPTWebViewStore {
           if (!target) return false;
 
           try {
-            target.scrollTo({ top: target.scrollHeight, left: target.scrollLeft || 0, behavior: 'smooth' });
+            target.scrollTo({ top: target.scrollHeight, left: 0, behavior: 'smooth' });
           } catch (_) {
+            target.scrollLeft = 0;
             target.scrollTop = target.scrollHeight;
           }
 
           try {
-            window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+            window.scrollTo({ top: document.documentElement.scrollHeight, left: 0, behavior: 'smooth' });
           } catch (_) {}
 
           return true;
@@ -76,7 +86,7 @@ extension ChatGPTWebViewStore {
                     + scrollView.adjustedContentInset.bottom
             )
             scrollView.setContentOffset(
-                CGPoint(x: scrollView.contentOffset.x, y: bottomOffset),
+                CGPoint(x: 0, y: bottomOffset),
                 animated: true
             )
         }
