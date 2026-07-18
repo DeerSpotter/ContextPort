@@ -1,8 +1,8 @@
 {
-  "request_id": "2026-07-18-contextport-2.10.12-build-91-activate-1",
+  "request_id": "2026-07-18-contextport-2.10.12-build-91-activate-2",
   "tag_name": "v2.10.12",
   "name": "ContextPort 2.10.12",
-  "target_commitish": "main",
+  "target_commitish": "a0cdea351f9920339026623d5beb7e9e55b40e68",
   "draft": true,
   "prerelease": false,
   "allow_update_published": false
