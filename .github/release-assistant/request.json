@@ -1,0 +1,9 @@
+{
+  "request_id": "2026-07-18-contextport-2.10.12-build-91",
+  "tag_name": "v2.10.12",
+  "name": "ContextPort 2.10.12",
+  "target_commitish": "main",
+  "draft": true,
+  "prerelease": false,
+  "allow_update_published": false
+}

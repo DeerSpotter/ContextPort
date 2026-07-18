@@ -1,0 +1,126 @@
+name: Release Assistant
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/release-assistant/request.json
+      - .github/release-assistant/release-notes.md
+      - .github/workflows/release-assistant.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assistant
+  cancel-in-progress: false
+
+jobs:
+  create-or-update-draft-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate release request
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+
+          const requestPath = '.github/release-assistant/request.json';
+          const notesPath = '.github/release-assistant/release-notes.md';
+          const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+          const required = ['request_id', 'tag_name', 'name', 'target_commitish'];
+
+          for (const field of required) {
+            if (typeof request[field] !== 'string' || request[field].trim() === '') {
+              throw new Error(`Missing required string field: ${field}`);
+            }
+          }
+
+          if (!/^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(request.tag_name)) {
+            throw new Error(`Unsupported tag format: ${request.tag_name}`);
+          }
+
+          if (request.draft === false) {
+            throw new Error('Release Assistant only creates or updates draft releases. Publish manually after review.');
+          }
+
+          if (!fs.existsSync(notesPath)) {
+            throw new Error(`Missing release notes file: ${notesPath}`);
+          }
+
+          const notes = fs.readFileSync(notesPath, 'utf8').trim();
+          if (notes.length === 0) {
+            throw new Error('Release notes cannot be empty.');
+          }
+
+          console.log(`Validated ${request.tag_name}: ${request.name}`);
+          NODE
+
+      - name: Create or update draft release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+
+            const request = JSON.parse(
+              fs.readFileSync('.github/release-assistant/request.json', 'utf8')
+            );
+            const body = fs
+              .readFileSync('.github/release-assistant/release-notes.md', 'utf8')
+              .trim();
+            const { owner, repo } = context.repo;
+
+            const releaseFields = {
+              owner,
+              repo,
+              tag_name: request.tag_name,
+              target_commitish: request.target_commitish,
+              name: request.name,
+              body,
+              draft: true,
+              prerelease: request.prerelease === true,
+              make_latest: 'false'
+            };
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag: request.tag_name
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            if (release) {
+              if (!release.data.draft && request.allow_update_published !== true) {
+                throw new Error(
+                  `Release ${request.tag_name} is already published. ` +
+                  'Set allow_update_published=true only when an intentional published-release update is required.'
+                );
+              }
+
+              const updated = await github.rest.repos.updateRelease({
+                ...releaseFields,
+                release_id: release.data.id
+              });
+              release = updated;
+              core.notice(`Updated draft release ${request.tag_name}`);
+            } else {
+              release = await github.rest.repos.createRelease(releaseFields);
+              core.notice(`Created draft release ${request.tag_name}`);
+            }
+
+            await core.summary
+              .addHeading('Release Assistant')
+              .addRaw(`Request: ${request.request_id}\n\n`)
+              .addLink(release.data.name || request.tag_name, release.data.html_url)
+              .write();
