@@ -72,6 +72,8 @@ struct ExperimentalChatOptimizationSettingsView: View {
     @AppStorage("ChatGPTLogTargetSelectionEnabled") private var logTargetSelectionEnabled = false
     @AppStorage("ChatGPTLogDOMCountsEnabled") private var logDOMCountsEnabled = false
 
+    @State private var showingResetConfirmation = false
+
     private var selectedPreset: ChatOptimizationPreset {
         ChatOptimizationPreset(rawValue: selectedPresetRaw) ?? .balanced
     }
@@ -89,147 +91,162 @@ struct ExperimentalChatOptimizationSettingsView: View {
                     applyPreset(selectedPreset)
                 }
 
-                Button("Reset Experimental Controls", role: .destructive) {
-                    applyPreset(.balanced)
+                Button("Reset All Optimization Settings", role: .destructive) {
+                    showingResetConfirmation = true
                 }
             } header: {
                 Text("Optimization Test Presets")
             } footer: {
-                Text("Presets change the controls below but do not prevent individual adjustment. Extreme options may hide or simplify provider content and are intended only for controlled testing.")
+                Text("Balanced is an active test preset. Reset restores ContextPort's factory optimization defaults: Access First on with six buckets, long-chat filtering off, one render bucket, diagnostics off, provider defaults restored, and ChatGPT Mobile Fallback off.")
             }
 
-            Section {
-                Stepper(value: $recoveryDelayScalePercent, in: 25...400, step: 25) {
-                    settingRow("Recovery Delay Scale", value: "\(recoveryDelayScalePercent)%")
-                }
-
-                Stepper(value: $recoveryPassCount, in: 1...3) {
-                    settingRow("Recovery Passes", value: "\(recoveryPassCount)")
-                }
-
-                Stepper(value: $recoveryPassGapSeconds, in: 5...120, step: 5) {
-                    settingRow("Pass Gap", value: "\(recoveryPassGapSeconds) sec")
-                }
-
-                Toggle("Run Recovery When WebView Attaches", isOn: $runRecoveryOnAttachEnabled)
-                Toggle("Run Recovery When App Returns", isOn: $runRecoveryOnForegroundEnabled)
-                Toggle("Run Recovery After Memory Warning", isOn: $runRecoveryOnMemoryWarningEnabled)
-                Toggle("Prepare Native Scroll Every Attempt", isOn: $prepareNativeScrollEachAttemptEnabled)
-            } header: {
-                Text("Recovery Scheduling")
-            } footer: {
-                Text("Delay scale changes every access bucket. Multiple passes repeat the selected bucket schedule after the chosen gap. All work remains bounded and generation scoped.")
-            }
-
-            Section {
-                Toggle("Force Native Scrolling", isOn: $forceNativeScrollEnabled)
-                Toggle("Directional Lock", isOn: $directionalLockEnabled)
-                Toggle("Disable Outer WebView Bounce", isOn: $disableOuterBounceEnabled)
-                Toggle("Delay Content Touches", isOn: $delayContentTouchesEnabled)
-                Toggle("Show Vertical Scroll Indicator", isOn: $showVerticalScrollIndicatorEnabled)
-                Toggle("Show Horizontal Scroll Indicator", isOn: $showHorizontalScrollIndicatorEnabled)
-            } header: {
-                Text("Native WebView")
-            } footer: {
-                Text("These controls change the outer WKWebView scroll view. ChatGPT usually scrolls inside a separate DOM container, so different combinations may behave differently while the page is hydrating.")
-            }
-
-            Section {
-                Toggle("Enable Follow Latest", isOn: $followLatestEnabled)
-                Toggle("Start New Chats Following Latest", isOn: $startFollowingLatestEnabled)
-
-                Stepper(value: $followIntervalMilliseconds, in: 250...3000, step: 250) {
-                    settingRow("Follow Check", value: "\(followIntervalMilliseconds) ms")
-                }
-
-                Stepper(value: $nearBottomThresholdPoints, in: 20...300, step: 20) {
-                    settingRow("Near Bottom Threshold", value: "\(nearBottomThresholdPoints) pt")
-                }
-
-                Stepper(value: $upwardScrollThresholdPoints, in: 1...24) {
-                    settingRow("Upward Handoff", value: "\(upwardScrollThresholdPoints) pt")
-                }
-
-                Stepper(value: $programmaticScrollGuardMilliseconds, in: 100...1500, step: 50) {
-                    settingRow("Scroll Guard", value: "\(programmaticScrollGuardMilliseconds) ms")
-                }
-
-                Stepper(value: $maximumFollowDurationSeconds, in: 0...600, step: 30) {
-                    settingRow(
-                        "Maximum Follow Time",
-                        value: maximumFollowDurationSeconds == 0 ? "Unlimited" : "\(maximumFollowDurationSeconds) sec"
-                    )
-                }
-            } header: {
-                Text("Follow Latest")
-            } footer: {
-                Text("A shorter follow check reacts faster but performs more JavaScript work. Maximum Follow Time zero means follow until the user deliberately scrolls upward.")
-            }
-
-            Section {
-                Toggle("Rescan When Target Disappears", isOn: $rescanMissingTargetEnabled)
-                Toggle("Include Document Roots", isOn: $includeDocumentRootsEnabled)
-                Toggle("Prefer Conversation Containers", isOn: $preferConversationContainerEnabled)
-
-                Stepper(value: $targetMinimumHeightPoints, in: 80...600, step: 20) {
-                    settingRow("Minimum Target Height", value: "\(targetMinimumHeightPoints) pt")
-                }
-
-                Stepper(value: $targetMinimumScrollRangePoints, in: 20...400, step: 20) {
-                    settingRow("Minimum Scroll Range", value: "\(targetMinimumScrollRangePoints) pt")
-                }
-            } header: {
-                Text("Scroll Target Detection")
-            } footer: {
-                Text("Disabling rescans minimizes DOM queries but can leave scrolling unfixed if ChatGPT replaces its scroll container during hydration.")
-            }
-
-            Section {
-                Toggle("Use Content Visibility", isOn: $useContentVisibilityEnabled)
-                Toggle("Use CSS Containment", isOn: $useCSSContainmentEnabled)
-                Toggle("Defer Offscreen Images", isOn: $deferOffscreenImagesEnabled)
-                Toggle("Pause Offscreen Audio and Video", isOn: $pauseOffscreenMediaEnabled)
-                Toggle("Hide Embedded Frames", isOn: $hideEmbeddedFramesEnabled)
-                Toggle("Hide Canvas Content", isOn: $hideCanvasEnabled)
-                Toggle("Disable Animations and Transitions", isOn: $disableAnimationsEnabled)
-                Toggle("Reduce Blur, Filters, and Shadows", isOn: $reduceVisualEffectsEnabled)
-                Toggle("Hide ChatGPT Sidebar", isOn: $hideSidebarEnabled)
-                Toggle("Hide ChatGPT Header", isOn: $hideHeaderEnabled)
-                Toggle("Optimize Code Blocks", isOn: $optimizeCodeBlocksEnabled)
-
-                Stepper(value: $maximumImageHeightPoints, in: 0...1600, step: 100) {
-                    settingRow(
-                        "Maximum Image Height",
-                        value: maximumImageHeightPoints == 0 ? "Original" : "\(maximumImageHeightPoints) pt"
-                    )
-                }
-
-                Stepper(value: $domOptimizationIntervalMilliseconds, in: 1000...10000, step: 500) {
-                    settingRow("DOM Optimization Check", value: "\(domOptimizationIntervalMilliseconds) ms")
-                }
-            } header: {
-                Text("Rendering and Media Pressure")
-            } footer: {
-                Text("These are increasingly invasive experiments. Hidden frames, canvases, sidebars, or headers may remove provider controls or interactive results. Save Context should be verified after every combination.")
-            }
-
-            Section {
-                Toggle("Optimization Diagnostics", isOn: $diagnosticsEnabled)
-                Toggle("Log Scroll Target Selection", isOn: $logTargetSelectionEnabled)
-                    .disabled(!diagnosticsEnabled)
-                Toggle("Log DOM and Media Counts", isOn: $logDOMCountsEnabled)
-                    .disabled(!diagnosticsEnabled)
-            } header: {
-                Text("Diagnostics")
-            } footer: {
-                Text("Diagnostics add console logging and should be disabled during normal performance comparisons unless the log evidence is needed.")
-            }
+            recoverySchedulingSection
+            nativeWebViewSection
+            followLatestSection
+            targetDetectionSection
+            renderingPressureSection
+            diagnosticsSection
         }
         .onChange(of: settingsSignature) { _ in
             NotificationCenter.default.post(
                 name: ChatPerformanceSettings.progressiveAccessSettingsDidChangeNotification,
                 object: nil
             )
+        }
+        .alert("Reset Optimization Settings?", isPresented: $showingResetConfirmation) {
+            Button("Reset to Defaults", role: .destructive) {
+                resetToFactoryDefaults()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This resets every access, render, recovery, scrolling, media, diagnostic, provider optimization, and mobile fallback setting. AI sign-ins, saved chats, Memory, and other app settings are not changed.")
+        }
+    }
+
+    private var recoverySchedulingSection: some View {
+        Section {
+            Stepper(value: $recoveryDelayScalePercent, in: 25...400, step: 25) {
+                settingRow("Recovery Delay Scale", value: "\(recoveryDelayScalePercent)%")
+            }
+            Stepper(value: $recoveryPassCount, in: 1...3) {
+                settingRow("Recovery Passes", value: "\(recoveryPassCount)")
+            }
+            Stepper(value: $recoveryPassGapSeconds, in: 5...120, step: 5) {
+                settingRow("Pass Gap", value: "\(recoveryPassGapSeconds) sec")
+            }
+            Toggle("Run Recovery When WebView Attaches", isOn: $runRecoveryOnAttachEnabled)
+            Toggle("Run Recovery When App Returns", isOn: $runRecoveryOnForegroundEnabled)
+            Toggle("Run Recovery After Memory Warning", isOn: $runRecoveryOnMemoryWarningEnabled)
+            Toggle("Prepare Native Scroll Every Attempt", isOn: $prepareNativeScrollEachAttemptEnabled)
+        } header: {
+            Text("Recovery Scheduling")
+        } footer: {
+            Text("Delay scale changes every access bucket. Multiple passes repeat the selected bucket schedule after the chosen gap. All work remains bounded and generation scoped.")
+        }
+    }
+
+    private var nativeWebViewSection: some View {
+        Section {
+            Toggle("Force Native Scrolling", isOn: $forceNativeScrollEnabled)
+            Toggle("Directional Lock", isOn: $directionalLockEnabled)
+            Toggle("Disable Outer WebView Bounce", isOn: $disableOuterBounceEnabled)
+            Toggle("Delay Content Touches", isOn: $delayContentTouchesEnabled)
+            Toggle("Show Vertical Scroll Indicator", isOn: $showVerticalScrollIndicatorEnabled)
+            Toggle("Show Horizontal Scroll Indicator", isOn: $showHorizontalScrollIndicatorEnabled)
+        } header: {
+            Text("Native WebView")
+        } footer: {
+            Text("These controls change the outer WKWebView scroll view. ChatGPT usually scrolls inside a separate DOM container, so combinations may behave differently while the page hydrates.")
+        }
+    }
+
+    private var followLatestSection: some View {
+        Section {
+            Toggle("Enable Follow Latest", isOn: $followLatestEnabled)
+            Toggle("Start New Chats Following Latest", isOn: $startFollowingLatestEnabled)
+            Stepper(value: $followIntervalMilliseconds, in: 250...3000, step: 250) {
+                settingRow("Follow Check", value: "\(followIntervalMilliseconds) ms")
+            }
+            Stepper(value: $nearBottomThresholdPoints, in: 20...300, step: 20) {
+                settingRow("Near Bottom Threshold", value: "\(nearBottomThresholdPoints) pt")
+            }
+            Stepper(value: $upwardScrollThresholdPoints, in: 1...24) {
+                settingRow("Upward Handoff", value: "\(upwardScrollThresholdPoints) pt")
+            }
+            Stepper(value: $programmaticScrollGuardMilliseconds, in: 100...1500, step: 50) {
+                settingRow("Scroll Guard", value: "\(programmaticScrollGuardMilliseconds) ms")
+            }
+            Stepper(value: $maximumFollowDurationSeconds, in: 0...600, step: 30) {
+                settingRow(
+                    "Maximum Follow Time",
+                    value: maximumFollowDurationSeconds == 0 ? "Unlimited" : "\(maximumFollowDurationSeconds) sec"
+                )
+            }
+        } header: {
+            Text("Follow Latest")
+        } footer: {
+            Text("A shorter follow check reacts faster but performs more JavaScript work. Maximum Follow Time zero means follow until the user deliberately scrolls upward.")
+        }
+    }
+
+    private var targetDetectionSection: some View {
+        Section {
+            Toggle("Rescan When Target Disappears", isOn: $rescanMissingTargetEnabled)
+            Toggle("Include Document Roots", isOn: $includeDocumentRootsEnabled)
+            Toggle("Prefer Conversation Containers", isOn: $preferConversationContainerEnabled)
+            Stepper(value: $targetMinimumHeightPoints, in: 80...600, step: 20) {
+                settingRow("Minimum Target Height", value: "\(targetMinimumHeightPoints) pt")
+            }
+            Stepper(value: $targetMinimumScrollRangePoints, in: 20...400, step: 20) {
+                settingRow("Minimum Scroll Range", value: "\(targetMinimumScrollRangePoints) pt")
+            }
+        } header: {
+            Text("Scroll Target Detection")
+        } footer: {
+            Text("Disabling rescans minimizes DOM queries but can leave scrolling unfixed if ChatGPT replaces its scroll container during hydration.")
+        }
+    }
+
+    private var renderingPressureSection: some View {
+        Section {
+            Toggle("Use Content Visibility", isOn: $useContentVisibilityEnabled)
+            Toggle("Use CSS Containment", isOn: $useCSSContainmentEnabled)
+            Toggle("Defer Offscreen Images", isOn: $deferOffscreenImagesEnabled)
+            Toggle("Pause Offscreen Audio and Video", isOn: $pauseOffscreenMediaEnabled)
+            Toggle("Hide Embedded Frames", isOn: $hideEmbeddedFramesEnabled)
+            Toggle("Hide Canvas Content", isOn: $hideCanvasEnabled)
+            Toggle("Disable Animations and Transitions", isOn: $disableAnimationsEnabled)
+            Toggle("Reduce Blur, Filters, and Shadows", isOn: $reduceVisualEffectsEnabled)
+            Toggle("Hide ChatGPT Sidebar", isOn: $hideSidebarEnabled)
+            Toggle("Hide ChatGPT Header", isOn: $hideHeaderEnabled)
+            Toggle("Optimize Code Blocks", isOn: $optimizeCodeBlocksEnabled)
+            Stepper(value: $maximumImageHeightPoints, in: 0...1600, step: 100) {
+                settingRow(
+                    "Maximum Image Height",
+                    value: maximumImageHeightPoints == 0 ? "Original" : "\(maximumImageHeightPoints) pt"
+                )
+            }
+            Stepper(value: $domOptimizationIntervalMilliseconds, in: 1000...10000, step: 500) {
+                settingRow("DOM Optimization Check", value: "\(domOptimizationIntervalMilliseconds) ms")
+            }
+        } header: {
+            Text("Rendering and Media Pressure")
+        } footer: {
+            Text("These are increasingly invasive experiments. Hidden frames, canvases, sidebars, or headers may remove provider controls or interactive results. Verify Save Context after every combination.")
+        }
+    }
+
+    private var diagnosticsSection: some View {
+        Section {
+            Toggle("Optimization Diagnostics", isOn: $diagnosticsEnabled)
+            Toggle("Log Scroll Target Selection", isOn: $logTargetSelectionEnabled)
+                .disabled(!diagnosticsEnabled)
+            Toggle("Log DOM and Media Counts", isOn: $logDOMCountsEnabled)
+                .disabled(!diagnosticsEnabled)
+        } header: {
+            Text("Diagnostics")
+        } footer: {
+            Text("Diagnostics add console logging and should be disabled during normal performance comparisons unless log evidence is needed.")
         }
     }
 
@@ -394,6 +411,23 @@ struct ExperimentalChatOptimizationSettingsView: View {
             logTargetSelectionEnabled = true
             logDOMCountsEnabled = true
         }
+    }
+
+    private func resetToFactoryDefaults() {
+        selectedPresetRaw = ChatOptimizationPreset.balanced.rawValue
+        chatPerformanceSettings.resetToFactoryOptimizationDefaults()
+
+        recoveryDelayScalePercent = 100
+        recoveryPassCount = 1
+        recoveryPassGapSeconds = 20
+        runRecoveryOnAttachEnabled = true
+        runRecoveryOnForegroundEnabled = true
+        runRecoveryOnMemoryWarningEnabled = false
+        prepareNativeScrollEachAttemptEnabled = true
+        configureNativeDefaults()
+        configureFollowDefaults()
+        configureTargetDefaults()
+        clearRenderingPressureOptions()
     }
 
     private func configureNativeDefaults() {
