@@ -52,6 +52,8 @@ private struct ProviderProfileState {
 final class AIProfileManager: ObservableObject {
     @Published private var states: [AIProviderID: ProviderProfileState] = [:]
 
+    static let hideLoggedInUserNameDefaultsKey = "HideLoggedInUserNameInAISelector"
+
     private static let providerStatesKey = "MultiAIProviderProfileStatesV1"
 
     private static let legacySavedProfilesKey = "ChatGPTSavedProfiles"
@@ -103,7 +105,10 @@ final class AIProfileManager: ObservableObject {
     }
 
     func primaryDisplayName(for providerID: AIProviderID) -> String {
-        state(for: providerID).primaryDisplayName
+        if UserDefaults.standard.bool(forKey: Self.hideLoggedInUserNameDefaultsKey) {
+            return "Current User"
+        }
+        return state(for: providerID).primaryDisplayName
     }
 
     func primaryProfile(for providerID: AIProviderID) -> AIProfile {
