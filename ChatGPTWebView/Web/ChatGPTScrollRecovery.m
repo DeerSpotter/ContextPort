@@ -3,9 +3,17 @@
 #import <objc/runtime.h>
 
 static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptInstalledKey;
+static const void *CPChatGPTScrollRecoveryGenerationKey = &CPChatGPTScrollRecoveryGenerationKey;
+
+static NSString * const CPProgressiveChatAccessEnabledKey = @"ProgressiveChatAccessEnabled";
+static NSString * const CPProgressiveChatAccessBucketCountKey = @"ProgressiveChatAccessBucketCount";
+static NSString * const CPProgressiveAccessSettingsDidChangeNotification = @"ContextPortProgressiveAccessSettingsDidChange";
+
+static NSHashTable<WKWebView *> *CPProgressiveAccessWebViews;
 
 @interface WKWebView (ContextPortChatGPTScrollRecovery)
 - (void)cp_scrollRecovery_didMoveToWindow;
+- (void)cp_scheduleChatGPTScrollRecovery;
 @end
 
 @implementation WKWebView (ContextPortChatGPTScrollRecovery)
@@ -13,14 +21,27 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        CPProgressiveAccessWebViews = [NSHashTable weakObjectsHashTable];
+
         Method originalMove = class_getInstanceMethod(self, @selector(didMoveToWindow));
         Method replacementMove = class_getInstanceMethod(self, @selector(cp_scrollRecovery_didMoveToWindow));
         method_exchangeImplementations(originalMove, replacementMove);
+
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:CPProgressiveAccessSettingsDidChangeNotification
+            object:nil
+            queue:[NSOperationQueue mainQueue]
+            usingBlock:^(__unused NSNotification *notification) {
+                for (WKWebView *webView in CPProgressiveAccessWebViews.allObjects) {
+                    [webView cp_scheduleChatGPTScrollRecovery];
+                }
+            }];
     });
 }
 
 - (void)cp_scrollRecovery_didMoveToWindow {
     [self cp_scrollRecovery_didMoveToWindow];
+    [CPProgressiveAccessWebViews addObject:self];
     [self cp_installChatGPTScrollRecoveryScriptIfNeeded];
     [self cp_scheduleChatGPTScrollRecovery];
 }
@@ -29,6 +50,21 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
     NSString *host = url.host.lowercaseString;
     if (host.length == 0) return NO;
     return [host isEqualToString:@"chatgpt.com"] || [host hasSuffix:@".chatgpt.com"];
+}
+
+- (BOOL)cp_progressiveChatAccessEnabled {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:CPProgressiveChatAccessEnabledKey] == nil) {
+        return YES;
+    }
+    return [defaults boolForKey:CPProgressiveChatAccessEnabledKey];
+}
+
+- (NSInteger)cp_progressiveAccessBucketCount {
+    NSInteger count = [[NSUserDefaults standardUserDefaults]
+        integerForKey:CPProgressiveChatAccessBucketCountKey];
+    if (count <= 0) count = 6;
+    return MIN(MAX(count, 1), 12);
 }
 
 - (void)cp_prepareNativeScrollViewForChatGPT {
@@ -59,10 +95,32 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
 }
 
 - (void)cp_scheduleChatGPTScrollRecovery {
+    NSNumber *generation = objc_getAssociatedObject(self, CPChatGPTScrollRecoveryGenerationKey);
+    NSInteger nextGeneration = generation.integerValue + 1;
+    objc_setAssociatedObject(
+        self,
+        CPChatGPTScrollRecoveryGenerationKey,
+        @(nextGeneration),
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+
+    if (![self cp_progressiveChatAccessEnabled]) return;
+
     [self cp_prepareNativeScrollViewForChatGPT];
 
+    NSArray<NSNumber *> *allDelays = @[
+        @0.25, @0.75, @2.0, @5.0, @10.0, @16.0,
+        @24.0, @32.0, @45.0, @60.0, @90.0, @120.0
+    ];
+    NSInteger bucketCount = [self cp_progressiveAccessBucketCount];
+    NSArray<NSNumber *> *delays = [allDelays subarrayWithRange:NSMakeRange(0, bucketCount)];
+
+    NSLog(
+        @"[ContextPort] Progressive Chat Access scheduled with %ld access buckets.",
+        (long)bucketCount
+    );
+
     __weak WKWebView *weakWebView = self;
-    NSArray<NSNumber *> *delays = @[@0.25, @0.75, @2.0, @5.0, @10.0, @16.0];
     for (NSNumber *delay in delays) {
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
@@ -70,6 +128,14 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
             ^{
                 WKWebView *webView = weakWebView;
                 if (!webView || ![webView cp_isChatGPTScrollRecoveryURL:webView.URL]) return;
+
+                NSNumber *currentGeneration = objc_getAssociatedObject(
+                    webView,
+                    CPChatGPTScrollRecoveryGenerationKey
+                );
+                if (currentGeneration.integerValue != nextGeneration) return;
+                if (![webView cp_progressiveChatAccessEnabled]) return;
+
                 [webView cp_prepareNativeScrollViewForChatGPT];
                 [webView evaluateJavaScript:[webView cp_chatGPTScrollRecoveryScript]
                           completionHandler:nil];
@@ -150,7 +216,6 @@ static const void *CPChatGPTScrollScriptInstalledKey = &CPChatGPTScrollScriptIns
            "    };"
            ""
            "    const findBest = () => {"
-           "      if (!document.querySelector(turnSelector)) return null;"
            "      const items = ["
            "        document.scrollingElement,"
            "        document.documentElement,"
