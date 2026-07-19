@@ -33,6 +33,9 @@ final class ChatPerformanceSettings: ObservableObject {
 
     static let progressiveAccessBucketRange = 1...12
     static let defaultProgressiveAccessBucketCount = 6
+    static let defaultVisibleMessageLimit = 5
+    static let defaultEnabledProviderIDs: Set<AIProviderID> = [.chatGPT, .claude]
+
     static let progressiveAccessSettingsDidChangeNotification = Notification.Name(
         "ContextPortProgressiveAccessSettingsDidChange"
     )
@@ -126,13 +129,15 @@ final class ChatPerformanceSettings: ObservableObject {
         }
 
         let storedLimit = userDefaults.integer(forKey: Self.visibleMessageLimitKey)
-        self.visibleMessageLimit = Self.normalizedVisibleMessageLimit(storedLimit == 0 ? 5 : storedLimit)
+        self.visibleMessageLimit = Self.normalizedVisibleMessageLimit(
+            storedLimit == 0 ? Self.defaultVisibleMessageLimit : storedLimit
+        )
         self.latestExchangeOnly = userDefaults.bool(forKey: Self.latestExchangeOnlyKey)
 
         if let storedProviderIDs = userDefaults.stringArray(forKey: Self.enabledProviderIDsKey) {
             self.enabledProviderIDs = Set(storedProviderIDs.compactMap(AIProviderID.init(rawValue:)))
         } else {
-            self.enabledProviderIDs = [.chatGPT, .claude]
+            self.enabledProviderIDs = Self.defaultEnabledProviderIDs
         }
 
         self.chatGPTMobileWebFallbackEnabled = userDefaults.bool(
@@ -187,6 +192,17 @@ final class ChatPerformanceSettings: ObservableObject {
         } else {
             enabledProviderIDs.remove(providerID)
         }
+    }
+
+    func resetToFactoryOptimizationDefaults() {
+        latestExchangeOnly = false
+        isEnabled = false
+        visibleMessageLimit = Self.defaultVisibleMessageLimit
+        enabledProviderIDs = Self.defaultEnabledProviderIDs
+        chatGPTMobileWebFallbackEnabled = false
+        progressiveChatAccessEnabled = true
+        progressiveAccessBucketCount = Self.defaultProgressiveAccessBucketCount
+        postProgressiveAccessSettingsDidChange()
     }
 
     private func postProgressiveAccessSettingsDidChange() {
