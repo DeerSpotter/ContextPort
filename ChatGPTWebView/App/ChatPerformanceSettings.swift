@@ -29,6 +29,13 @@ struct ChatPerformanceConfiguration: Equatable {
 final class ChatPerformanceSettings: ObservableObject {
     static let visibleMessageRange = 5...100
     static let visibleMessageStep = 5
+    static let messagesPerRenderBucket = 5
+
+    static let progressiveAccessBucketRange = 1...12
+    static let defaultProgressiveAccessBucketCount = 6
+    static let progressiveAccessSettingsDidChangeNotification = Notification.Name(
+        "ContextPortProgressiveAccessSettingsDidChange"
+    )
 
     @Published var isEnabled: Bool {
         didSet {
@@ -72,11 +79,40 @@ final class ChatPerformanceSettings: ObservableObject {
         }
     }
 
+    @Published var progressiveChatAccessEnabled: Bool {
+        didSet {
+            userDefaults.set(
+                progressiveChatAccessEnabled,
+                forKey: Self.progressiveChatAccessEnabledKey
+            )
+            postProgressiveAccessSettingsDidChange()
+        }
+    }
+
+    @Published var progressiveAccessBucketCount: Int {
+        didSet {
+            let normalized = Self.normalizedProgressiveAccessBucketCount(
+                progressiveAccessBucketCount
+            )
+            if progressiveAccessBucketCount != normalized {
+                progressiveAccessBucketCount = normalized
+                return
+            }
+            userDefaults.set(
+                progressiveAccessBucketCount,
+                forKey: Self.progressiveAccessBucketCountKey
+            )
+            postProgressiveAccessSettingsDidChange()
+        }
+    }
+
     private static let enabledKey = "ChatPerformanceEnabled"
     private static let visibleMessageLimitKey = "ChatPerformanceVisibleMessageLimit"
     private static let latestExchangeOnlyKey = "ChatPerformanceLatestExchangeOnly"
     private static let enabledProviderIDsKey = "ChatPerformanceEnabledProviderIDs"
     private static let chatGPTMobileWebFallbackEnabledKey = "ChatGPTMobileWebFallbackEnabled"
+    private static let progressiveChatAccessEnabledKey = "ProgressiveChatAccessEnabled"
+    private static let progressiveAccessBucketCountKey = "ProgressiveChatAccessBucketCount"
 
     private let userDefaults: UserDefaults
 
@@ -102,6 +138,23 @@ final class ChatPerformanceSettings: ObservableObject {
         self.chatGPTMobileWebFallbackEnabled = userDefaults.bool(
             forKey: Self.chatGPTMobileWebFallbackEnabledKey
         )
+
+        if userDefaults.object(forKey: Self.progressiveChatAccessEnabledKey) == nil {
+            self.progressiveChatAccessEnabled = true
+        } else {
+            self.progressiveChatAccessEnabled = userDefaults.bool(
+                forKey: Self.progressiveChatAccessEnabledKey
+            )
+        }
+
+        let storedBucketCount = userDefaults.integer(
+            forKey: Self.progressiveAccessBucketCountKey
+        )
+        self.progressiveAccessBucketCount = Self.normalizedProgressiveAccessBucketCount(
+            storedBucketCount == 0
+                ? Self.defaultProgressiveAccessBucketCount
+                : storedBucketCount
+        )
     }
 
     var configuration: ChatPerformanceConfiguration {
@@ -112,6 +165,16 @@ final class ChatPerformanceSettings: ObservableObject {
             enabledProviderIDs: enabledProviderIDs,
             chatGPTMobileWebFallbackEnabled: chatGPTMobileWebFallbackEnabled
         )
+    }
+
+    var renderBucketCount: Int {
+        max(1, visibleMessageLimit / Self.messagesPerRenderBucket)
+    }
+
+    func setRenderBucketCount(_ bucketCount: Int) {
+        let maximumBuckets = Self.visibleMessageRange.upperBound / Self.messagesPerRenderBucket
+        let normalized = min(max(bucketCount, 1), maximumBuckets)
+        visibleMessageLimit = normalized * Self.messagesPerRenderBucket
     }
 
     func isProviderEnabled(_ providerID: AIProviderID) -> Bool {
@@ -126,9 +189,23 @@ final class ChatPerformanceSettings: ObservableObject {
         }
     }
 
+    private func postProgressiveAccessSettingsDidChange() {
+        NotificationCenter.default.post(
+            name: Self.progressiveAccessSettingsDidChangeNotification,
+            object: nil
+        )
+    }
+
     private static func normalizedVisibleMessageLimit(_ value: Int) -> Int {
         let clamped = min(max(value, visibleMessageRange.lowerBound), visibleMessageRange.upperBound)
         let step = visibleMessageStep
         return Int((Double(clamped) / Double(step)).rounded()) * step
+    }
+
+    private static func normalizedProgressiveAccessBucketCount(_ value: Int) -> Int {
+        min(
+            max(value, progressiveAccessBucketRange.lowerBound),
+            progressiveAccessBucketRange.upperBound
+        )
     }
 }
