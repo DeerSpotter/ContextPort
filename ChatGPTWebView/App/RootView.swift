@@ -408,6 +408,8 @@ private struct SettingsView: View {
                     Text("Access First lets already rendered chat content become scrollable while ChatGPT continues loading. Changes save automatically. For a clean comparison, fully close ContextPort from the app switcher and reopen the same Work chat.")
                 }
 
+                ExperimentalChatOptimizationSettingsView()
+
                 Section {
                     Toggle("Optimize Long Chats", isOn: $chatPerformanceSettings.isEnabled)
                         .disabled(chatPerformanceSettings.latestExchangeOnly)
@@ -535,7 +537,7 @@ private struct SettingsView: View {
                 }
                 Button("Keep Adjusting", role: .cancel) {}
             } message: {
-                Text("Fully close ContextPort from the app switcher, then reopen it to test the selected access and render buckets from a clean start.")
+                Text("Fully close ContextPort from the app switcher, then reopen it to test the selected access, follow, rendering, and media controls from a clean start.")
             }
         }
     }
