@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PreferenceSpecifiers</key>
+    <array>
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Progressive Chat Access</string>
+            <key>FooterText</key>
+            <string>Allows the visible ChatGPT page to become scrollable before the full Work session, composer, connectors, and remaining page initialization finish.</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSToggleSwitchSpecifier</string>
+            <key>Title</key>
+            <string>Enable Access First</string>
+            <key>Key</key>
+            <string>ProgressiveChatAccessEnabled</string>
+            <key>DefaultValue</key>
+            <true/>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSMultiValueSpecifier</string>
+            <key>Title</key>
+            <string>Access Buckets</string>
+            <key>Key</key>
+            <string>ProgressiveChatAccessBucketCount</string>
+            <key>DefaultValue</key>
+            <integer>6</integer>
+            <key>Titles</key>
+            <array>
+                <string>1 • 0.25 seconds</string>
+                <string>2 • 0.75 seconds</string>
+                <string>3 • 2 seconds</string>
+                <string>4 • 5 seconds</string>
+                <string>5 • 10 seconds</string>
+                <string>6 • 16 seconds</string>
+                <string>7 • 24 seconds</string>
+                <string>8 • 32 seconds</string>
+                <string>9 • 45 seconds</string>
+                <string>10 • 60 seconds</string>
+                <string>11 • 90 seconds</string>
+                <string>12 • 120 seconds</string>
+            </array>
+            <key>Values</key>
+            <array>
+                <integer>1</integer>
+                <integer>2</integer>
+                <integer>3</integer>
+                <integer>4</integer>
+                <integer>5</integer>
+                <integer>6</integer>
+                <integer>7</integer>
+                <integer>8</integer>
+                <integer>9</integer>
+                <integer>10</integer>
+                <integer>11</integer>
+                <integer>12</integer>
+            </array>
+        </dict>
+
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Render Buckets</string>
+            <key>FooterText</key>
+            <string>Each render bucket represents five visible messages. Older messages are hidden, not deleted, and remain available to Save Context. This controls DOM rendering pressure rather than the private WebKit RAM ceiling.</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSToggleSwitchSpecifier</string>
+            <key>Title</key>
+            <string>Optimize Long Chats</string>
+            <key>Key</key>
+            <string>ChatPerformanceEnabled</string>
+            <key>DefaultValue</key>
+            <false/>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSMultiValueSpecifier</string>
+            <key>Title</key>
+            <string>Visible Render Buckets</string>
+            <key>Key</key>
+            <string>ChatPerformanceVisibleMessageLimit</string>
+            <key>DefaultValue</key>
+            <integer>5</integer>
+            <key>Titles</key>
+            <array>
+                <string>1 bucket • 5 messages</string>
+                <string>2 buckets • 10 messages</string>
+                <string>3 buckets • 15 messages</string>
+                <string>4 buckets • 20 messages</string>
+                <string>5 buckets • 25 messages</string>
+                <string>6 buckets • 30 messages</string>
+                <string>7 buckets • 35 messages</string>
+                <string>8 buckets • 40 messages</string>
+                <string>9 buckets • 45 messages</string>
+                <string>10 buckets • 50 messages</string>
+                <string>11 buckets • 55 messages</string>
+                <string>12 buckets • 60 messages</string>
+                <string>13 buckets • 65 messages</string>
+                <string>14 buckets • 70 messages</string>
+                <string>15 buckets • 75 messages</string>
+                <string>16 buckets • 80 messages</string>
+                <string>17 buckets • 85 messages</string>
+                <string>18 buckets • 90 messages</string>
+                <string>19 buckets • 95 messages</string>
+                <string>20 buckets • 100 messages</string>
+            </array>
+            <key>Values</key>
+            <array>
+                <integer>5</integer>
+                <integer>10</integer>
+                <integer>15</integer>
+                <integer>20</integer>
+                <integer>25</integer>
+                <integer>30</integer>
+                <integer>35</integer>
+                <integer>40</integer>
+                <integer>45</integer>
+                <integer>50</integer>
+                <integer>55</integer>
+                <integer>60</integer>
+                <integer>65</integer>
+                <integer>70</integer>
+                <integer>75</integer>
+                <integer>80</integer>
+                <integer>85</integer>
+                <integer>90</integer>
+                <integer>95</integer>
+                <integer>100</integer>
+            </array>
+        </dict>
+
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Test Procedure</string>
+            <key>FooterText</key>
+            <string>Change one value at a time, fully close ContextPort, reopen the same Work chat, and record: first visible text, first successful scroll, newest message visible, composer ready, refresh or termination, and total time. Settings are experimental and device dependent.</string>
+        </dict>
+    </array>
+    <key>StringsTable</key>
+    <string>Root</string>
+</dict>
+</plist>
