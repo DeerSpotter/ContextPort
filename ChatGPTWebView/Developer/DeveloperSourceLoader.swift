@@ -131,8 +131,7 @@ private func loadExternalDeveloperSource(
 
     do {
         var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 30
+        request.cachePolicy = .useProtocolCachePolicy
         if let userAgent, !userAgent.isEmpty {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
@@ -141,10 +140,12 @@ private func loadExternalDeveloperSource(
         }
         request.setValue(pageURL, forHTTPHeaderField: "Referer")
 
-        let boundedRequest = DeveloperSourceBoundedRequest(maximumBytes: reservation)
-        let loaded = try await boundedRequest.load(request)
-        let data = loaded.data
-        let response = loaded.response
+        let loaded = try await loadDeveloperSourceWithTransientRetry(
+            request,
+            maximumBytes: reservation
+        )
+        let data = loaded.response.data
+        let response = loaded.response.response
 
         if let httpResponse = response as? HTTPURLResponse {
             let sourceMapReferences = [
@@ -186,6 +187,9 @@ private func loadExternalDeveloperSource(
         }
 
         await budget.commit(reservation: reservation, actualBytes: data.count)
+        let retryNote = loaded.attemptCount == 1
+            ? ""
+            : " after \(loaded.attemptCount) bounded attempts"
         return DeveloperSourceFile(
             id: sourceID,
             sessionTitle: sessionTitle,
@@ -194,7 +198,7 @@ private func loadExternalDeveloperSource(
             urlString: urlString,
             kind: descriptor.kind,
             content: content,
-            metadataNote: "External source text was downloaded sequentially through a bounded response reader.",
+            metadataNote: "External source text was downloaded sequentially through a bounded response reader\(retryNote).",
             resourceByteCount: nil,
             loadError: nil
         )
@@ -244,6 +248,76 @@ private func loadExternalDeveloperSource(
     }
 }
 
+private struct DeveloperSourceRetryResult {
+    let response: DeveloperSourceBoundedHTTPResponse
+    let attemptCount: Int
+}
+
+private func loadDeveloperSourceWithTransientRetry(
+    _ baseRequest: URLRequest,
+    maximumBytes: Int
+) async throws -> DeveloperSourceRetryResult {
+    let timeoutSchedule: [TimeInterval] = [30, 45, 60]
+    let retryDelays: [UInt64] = [500_000_000, 1_500_000_000]
+    var lastError: Error?
+
+    for (index, timeout) in timeoutSchedule.enumerated() {
+        try Task.checkCancellation()
+
+        var request = baseRequest
+        request.timeoutInterval = timeout
+
+        do {
+            let boundedRequest = DeveloperSourceBoundedRequest(maximumBytes: maximumBytes)
+            let response = try await boundedRequest.load(request)
+            return DeveloperSourceRetryResult(
+                response: response,
+                attemptCount: index + 1
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            lastError = error
+            let hasAnotherAttempt = index + 1 < timeoutSchedule.count
+            guard hasAnotherAttempt, isTransientDeveloperSourceError(error) else {
+                throw error
+            }
+
+            try await Task.sleep(nanoseconds: retryDelays[index])
+        }
+    }
+
+    throw DeveloperSourceRetryError.exhausted(
+        attempts: timeoutSchedule.count,
+        lastError: lastError
+    )
+}
+
+private func isTransientDeveloperSourceError(_ error: Error) -> Bool {
+    let code: URLError.Code?
+    if let urlError = error as? URLError {
+        code = urlError.code
+    } else {
+        let nsError = error as NSError
+        code = nsError.domain == NSURLErrorDomain
+            ? URLError.Code(rawValue: nsError.code)
+            : nil
+    }
+
+    guard let code else { return false }
+    switch code {
+    case .timedOut,
+         .networkConnectionLost,
+         .cannotConnectToHost,
+         .cannotFindHost,
+         .dnsLookupFailed,
+         .resourceUnavailable:
+        return true
+    default:
+        return false
+    }
+}
+
 private func isSourceMapDescriptor(_ descriptor: DeveloperDiscoveredSource, url: URL) -> Bool {
     let path = url.path.lowercased()
     if path.hasSuffix(".map") { return true }
@@ -269,6 +343,18 @@ private func budgetMetadataOnlySource(
         resourceByteCount: nil,
         loadError: nil
     )
+}
+
+private enum DeveloperSourceRetryError: LocalizedError {
+    case exhausted(attempts: Int, lastError: Error?)
+
+    var errorDescription: String? {
+        switch self {
+        case .exhausted(let attempts, let lastError):
+            let detail = lastError?.localizedDescription ?? "Unknown network failure."
+            return "The source request failed after \(attempts) bounded attempts. \(detail)"
+        }
+    }
 }
 
 private enum DeveloperSourceLoadError: LocalizedError {
