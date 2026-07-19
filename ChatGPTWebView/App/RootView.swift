@@ -357,6 +357,7 @@ private struct SettingsView: View {
     @AppStorage(ChatGPTProfileSessionPool.restoreLastChatDefaultsKey) private var restoreLastChatEnabled = true
     @AppStorage("developerModeEnabled") private var developerModeEnabled = false
     @Environment(\.dismiss) private var dismiss
+    @State private var showingRestartNotice = false
 
     private let developerSupportURL = URL(string: "https://buymeacoffee.com/spotterdeer")!
 
@@ -376,6 +377,38 @@ private struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Enable Access First", isOn: $chatPerformanceSettings.progressiveChatAccessEnabled)
+
+                    Stepper(
+                        value: $chatPerformanceSettings.progressiveAccessBucketCount,
+                        in: ChatPerformanceSettings.progressiveAccessBucketRange
+                    ) {
+                        HStack {
+                            Text("Access Buckets")
+                            Spacer()
+                            Text("\(chatPerformanceSettings.progressiveAccessBucketCount)")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .disabled(!chatPerformanceSettings.progressiveChatAccessEnabled)
+
+                    HStack {
+                        Text("Final Recovery Attempt")
+                        Spacer()
+                        Text(accessBucketFinalDelayText)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button("Save Settings for Restart") {
+                        showingRestartNotice = true
+                    }
+                } header: {
+                    Text("Progressive Chat Access")
+                } footer: {
+                    Text("Access First lets already rendered chat content become scrollable while ChatGPT continues loading. Changes save automatically. For a clean comparison, fully close ContextPort from the app switcher and reopen the same Work chat.")
+                }
+
+                Section {
                     Toggle("Optimize Long Chats", isOn: $chatPerformanceSettings.isEnabled)
                         .disabled(chatPerformanceSettings.latestExchangeOnly)
 
@@ -388,14 +421,13 @@ private struct SettingsView: View {
                     }
 
                     Stepper(
-                        value: $chatPerformanceSettings.visibleMessageLimit,
-                        in: ChatPerformanceSettings.visibleMessageRange,
-                        step: ChatPerformanceSettings.visibleMessageStep
+                        value: renderBucketBinding,
+                        in: 1...(ChatPerformanceSettings.visibleMessageRange.upperBound / ChatPerformanceSettings.messagesPerRenderBucket)
                     ) {
                         HStack {
-                            Text("Visible Messages")
+                            Text("Render Buckets")
                             Spacer()
-                            Text("\(chatPerformanceSettings.visibleMessageLimit)")
+                            Text("\(chatPerformanceSettings.renderBucketCount) • \(chatPerformanceSettings.visibleMessageLimit) messages")
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -440,7 +472,7 @@ private struct SettingsView: View {
                 } header: {
                     Text("Chat Performance")
                 } footer: {
-                    Text("Latest Exchange Only overrides the normal message window and keeps only your newest question plus the current AI response visible. Older loaded messages remain available to Save Context. Long-chat optimization otherwise hides older loaded messages without removing them. ChatGPT Mobile Fallback adds mweb_fallback=1 to ChatGPT conversation URLs only when the parameter is missing.")
+                    Text("Each render bucket represents five visible messages. Older loaded messages remain available to Save Context. Latest Exchange Only overrides the normal render window. ChatGPT Mobile Fallback adds mweb_fallback=1 only when the parameter is missing.")
                 }
 
                 Section("Memory Sharing") {
@@ -497,7 +529,39 @@ private struct SettingsView: View {
                     }
                 }
             }
+            .alert("Settings Saved", isPresented: $showingRestartNotice) {
+                Button("Close Settings") {
+                    dismiss()
+                }
+                Button("Keep Adjusting", role: .cancel) {}
+            } message: {
+                Text("Fully close ContextPort from the app switcher, then reopen it to test the selected access and render buckets from a clean start.")
+            }
         }
+    }
+
+    private var renderBucketBinding: Binding<Int> {
+        Binding(
+            get: {
+                chatPerformanceSettings.renderBucketCount
+            },
+            set: { bucketCount in
+                chatPerformanceSettings.setRenderBucketCount(bucketCount)
+            }
+        )
+    }
+
+    private var accessBucketFinalDelayText: String {
+        let labels = [
+            "0.25 seconds", "0.75 seconds", "2 seconds", "5 seconds",
+            "10 seconds", "16 seconds", "24 seconds", "32 seconds",
+            "45 seconds", "60 seconds", "90 seconds", "120 seconds"
+        ]
+        let index = min(
+            max(chatPerformanceSettings.progressiveAccessBucketCount - 1, 0),
+            labels.count - 1
+        )
+        return labels[index]
     }
 
     private func providerBinding(_ providerID: AIProviderID) -> Binding<Bool> {
