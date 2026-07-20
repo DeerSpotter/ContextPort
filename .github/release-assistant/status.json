@@ -1,12 +1,12 @@
 {
-  "request_id": "2026-07-18-contextport-2.10.12-build-91-activate-2",
-  "tag_name": "v2.10.12",
-  "name": "ContextPort 2.10.12",
-  "target_commitish": "a0cdea351f9920339026623d5beb7e9e55b40e68",
-  "action": "updated",
-  "release_id": 356127306,
-  "release_url": "https://github.com/DeerSpotter/ContextPort/releases/tag/untagged-6a8c358ccf7be179d553",
+  "request_id": "2026-07-20-contextport-2.10.18-build-98",
+  "tag_name": "v2.10.18",
+  "name": "ContextPort 2.10.18",
+  "target_commitish": "c2e7a09d7d7c7419809fc38403656635baf40835",
+  "action": "created",
+  "release_id": 356732964,
+  "release_url": "https://github.com/DeerSpotter/ContextPort/releases/tag/untagged-540698371052ab958e58",
   "draft": true,
   "prerelease": false,
-  "completed_at": "2026-07-18T15:09:19.063Z"
+  "completed_at": "2026-07-20T13:14:55.257Z"
 }
