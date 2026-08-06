@@ -355,6 +355,7 @@ private struct SettingsView: View {
     @EnvironmentObject private var launchSettings: MemoryLaunchSettings
     @EnvironmentObject private var chatPerformanceSettings: ChatPerformanceSettings
     @AppStorage(ChatGPTProfileSessionPool.restoreLastChatDefaultsKey) private var restoreLastChatEnabled = true
+    @AppStorage("StartChatGPTChatsAsTemporary") private var startChatGPTChatsAsTemporary = true
     @AppStorage("developerModeEnabled") private var developerModeEnabled = false
     @Environment(\.dismiss) private var dismiss
     @State private var showingRestartNotice = false
@@ -374,6 +375,16 @@ private struct SettingsView: View {
                     Text("AI Providers")
                 } footer: {
                     Text("Choose which AIs are available throughout ContextPort. At least one AI must remain enabled.")
+                }
+
+                Section {
+                    Toggle(isOn: $startChatGPTChatsAsTemporary) {
+                        Label("Start New Chats as Temporary", systemImage: "eye.slash.fill")
+                    }
+                } header: {
+                    Text("ChatGPT Privacy")
+                } footer: {
+                    Text("When enabled, each fresh ChatGPT composer starts in Temporary Chat. Existing conversations and other AI providers are unchanged. Turning this off affects future new chats.")
                 }
 
                 Section {
