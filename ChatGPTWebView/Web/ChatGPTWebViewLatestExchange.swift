@@ -399,7 +399,7 @@ extension ChatGPTWebViewStore {
                     "main [data-testid*=\"message\"]"
                 ]
             )
-        case .deepSeek:
+        case .deepSeek, .github:
             return LatestExchangeDOMConfiguration(
                 messageSelectors: []
             )
