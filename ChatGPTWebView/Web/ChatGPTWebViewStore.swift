@@ -555,6 +555,7 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
     private weak var mainWebView: WKWebView?
     private weak var observedCookieStore: WKHTTPCookieStore?
     private var authPopupWebViews: [ObjectIdentifier: WKWebView] = [:]
+    private var chatGPTGitHubAuthInProgress = false
     private var grokAuthInProgress = false
     private var grokAuthLeftProvider = false
     private var grokAuthBridgeReloadRequested = false
@@ -610,6 +611,12 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if provider.id == .chatGPT,
+           chatGPTGitHubAuthInProgress,
+           isChatGPTReturnURL(webView.url) {
+            chatGPTGitHubAuthInProgress = false
+        }
+
         if provider.id == .grok {
             updateGrokAuthState(for: webView.url)
 
@@ -640,6 +647,12 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.cancel)
+            return
+        }
+
+        if shouldAllowChatGPTGitHubAuthenticationURL(url, openerURL: webView.url) {
+            chatGPTGitHubAuthInProgress = true
+            decisionHandler(.allow)
             return
         }
 
@@ -688,6 +701,15 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard navigationAction.targetFrame == nil,
               let url = navigationAction.request.url else {
+            return nil
+        }
+
+        // GitHub OAuth may be launched as a new browsing target by ChatGPT.
+        // Keep only that scoped authentication navigation in the provider WebView
+        // so GitHub can redirect back into the same ChatGPT cookie/session context.
+        if shouldAllowChatGPTGitHubAuthenticationURL(url, openerURL: webView.url) {
+            chatGPTGitHubAuthInProgress = true
+            webView.load(navigationAction.request)
             return nil
         }
 
@@ -763,6 +785,60 @@ final class SecureChatGPTWebViewCoordinator: NSObject, WKNavigationDelegate, WKU
         webView.uiDelegate = nil
         webView.removeFromSuperview()
         authPopupWebViews.removeValue(forKey: popupID)
+    }
+
+    private func shouldAllowChatGPTGitHubAuthenticationURL(_ url: URL, openerURL: URL?) -> Bool {
+        guard provider.id == .chatGPT,
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              hostMatches(host, suffixes: ["github.com"]) else {
+            return false
+        }
+
+        if chatGPTGitHubAuthInProgress {
+            return true
+        }
+
+        guard let openerURL else { return false }
+        return isChatGPTAuthenticationContextURL(openerURL)
+    }
+
+    private func isChatGPTAuthenticationContextURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+
+        if hostMatches(host, suffixes: ["auth0.com"]) {
+            return true
+        }
+
+        guard hostMatches(host, suffixes: ["chatgpt.com", "openai.com"]) else {
+            return false
+        }
+
+        if host.hasPrefix("auth.") {
+            return true
+        }
+
+        let path = url.path.lowercased()
+        return path.hasPrefix("/auth")
+            || path.hasPrefix("/api/auth")
+            || path.hasPrefix("/login")
+            || path.hasPrefix("/signin")
+            || path.hasPrefix("/oauth")
+            || path.hasPrefix("/authorize")
+            || path.hasPrefix("/callback")
+    }
+
+    private func isChatGPTReturnURL(_ url: URL?) -> Bool {
+        guard let url,
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+
+        return hostMatches(host, suffixes: ["chatgpt.com"])
     }
 
     private func updateGrokAuthState(for url: URL?) {
