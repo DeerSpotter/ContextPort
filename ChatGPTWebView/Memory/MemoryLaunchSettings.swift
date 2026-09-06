@@ -81,7 +81,7 @@ struct MemoryLaunchSheet: View {
         NavigationStack {
             List {
                 Section("Share With") {
-                    ForEach(providerManager.providers) { provider in
+                    ForEach(providerManager.conversationProviders) { provider in
                         Button {
                             chooseProvider(provider)
                         } label: {
@@ -104,27 +104,29 @@ struct MemoryLaunchSheet: View {
                         .disabled(isPreparing)
                     }
 
-                    Button {
-                        chooseCurrentConversation()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "paperclip")
-                                .frame(width: 24)
-                            Text("Current Conversation")
-                            Spacer()
-                            if isPreparing, isCurrentConversationDestination {
-                                ProgressView()
-                            } else {
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(.secondary)
+                    if providerManager.activeProvider.supportsConversationContext {
+                        Button {
+                            chooseCurrentConversation()
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "paperclip")
+                                    .frame(width: 24)
+                                Text("Current Conversation")
+                                Spacer()
+                                if isPreparing, isCurrentConversationDestination {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.secondary)
+                                }
                             }
+                            .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .disabled(isPreparing)
+                        .accessibilityHint("Attach the selected Memory to the current AI conversation without starting a new chat")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isPreparing)
-                    .accessibilityHint("Attach the selected Memory to the current AI conversation without starting a new chat")
                 }
 
                 Section {
@@ -174,6 +176,11 @@ struct MemoryLaunchSheet: View {
     }
 
     private func chooseProvider(_ provider: AIProvider) {
+        guard provider.supportsConversationContext else {
+            launchError = "\(provider.displayName) is a browser service, not an AI context destination."
+            return
+        }
+
         launchError = nil
         pendingProvider = provider
         isCurrentConversationDestination = false
@@ -185,6 +192,11 @@ struct MemoryLaunchSheet: View {
     }
 
     private func chooseCurrentConversation() {
+        guard providerManager.activeProvider.supportsConversationContext else {
+            launchError = "The current tab does not accept AI Memory context."
+            return
+        }
+
         launchError = nil
         pendingProvider = nil
         isCurrentConversationDestination = true
@@ -216,6 +228,10 @@ struct MemoryLaunchSheet: View {
         format: MemorySharingFormat,
         handoffMode: MemoryHandoffMode
     ) {
+        guard provider.supportsConversationContext else {
+            launchError = "\(provider.displayName) does not support ContextPort AI Memory handoff."
+            return
+        }
         guard !isPreparing else { return }
         isPreparing = true
         launchError = nil
