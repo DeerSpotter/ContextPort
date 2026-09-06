@@ -507,7 +507,7 @@ extension ChatGPTWebViewStore {
                     "main"
                 ]
             )
-        case .deepSeek:
+        case .deepSeek, .github:
             return ChatPerformanceDOMConfiguration(
                 messageSelectors: [],
                 scrollSelectors: []
