@@ -35,25 +35,27 @@ struct AIChatTabView: View {
 
             if !isKeyboardVisible {
                 HStack(spacing: 4) {
-                    Button {
-                        if let pendingPasteContextText {
-                            pastePendingContext(pendingPasteContextText)
-                        } else if !pendingAttachFileURLs.isEmpty {
-                            attachPendingFiles(pendingAttachFileURLs)
-                        } else {
-                            presentSaveContextChoices()
+                    if provider.supportsConversationContext {
+                        Button {
+                            if let pendingPasteContextText {
+                                pastePendingContext(pendingPasteContextText)
+                            } else if !pendingAttachFileURLs.isEmpty {
+                                attachPendingFiles(pendingAttachFileURLs)
+                            } else {
+                                presentSaveContextChoices()
+                            }
+                        } label: {
+                            Text(contextButtonTitle)
+                                .font(.caption2.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 10)
+                                .frame(height: 30)
                         }
-                    } label: {
-                        Text(contextButtonTitle)
-                            .font(.caption2.weight(.semibold))
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .disabled(isSavingContext || isPastingContext || isAttachingFiles)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .disabled(isSavingContext || isPastingContext || isAttachingFiles)
 
                     Menu {
                         Button {
@@ -70,11 +72,13 @@ struct AIChatTabView: View {
                             Label("Stop", systemImage: "stop.circle")
                         }
 
-                        Button {
-                            webViewStore.scrollCurrentConversationToBottom()
-                            appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
-                        } label: {
-                            Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
+                        if provider.supportsConversationContext {
+                            Button {
+                                webViewStore.scrollCurrentConversationToBottom()
+                                appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
+                            } label: {
+                                Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
+                            }
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -86,7 +90,7 @@ struct AIChatTabView: View {
                     .background(.ultraThinMaterial, in: Circle())
                     .overlay(Circle().stroke(Color.primary.opacity(0.12), lineWidth: 1))
                     .accessibilityLabel("Page controls")
-                    .accessibilityHint("Opens refresh, stop, and scroll to bottom actions")
+                    .accessibilityHint("Opens refresh and page actions")
                 }
                 .padding(4)
                 .background(.ultraThinMaterial, in: Capsule())
@@ -271,6 +275,7 @@ struct AIChatTabView: View {
     }
 
     private func handlePendingMemoryStart() {
+        guard provider.supportsConversationContext else { return }
         guard let payload = PendingLocalMemoryAttachment.consumePayload() else {
             return
         }
@@ -390,13 +395,13 @@ struct AIChatTabView: View {
     }
 
     private func presentSaveContextChoices() {
-        guard !isSavingContext else { return }
+        guard provider.supportsConversationContext, !isSavingContext else { return }
         appModel.reloadLocalMemory()
         isShowingSaveContextOptions = true
     }
 
     private func prepareNewMemorySave() {
-        guard !isSavingContext else { return }
+        guard provider.supportsConversationContext, !isSavingContext else { return }
         isSavingContext = true
         appModel.statusMessage = "Reading \(provider.displayName) chat before naming the new Memory..."
 
@@ -467,7 +472,7 @@ struct AIChatTabView: View {
     }
 
     private func saveCurrentChatAsRevision(to memory: LocalMemoryEntry) {
-        guard !isSavingContext else { return }
+        guard provider.supportsConversationContext, !isSavingContext else { return }
         isSavingContext = true
         appModel.statusMessage = "Adding a new revision to \"\(memory.title)\"..."
 

@@ -6,6 +6,7 @@ enum AIProviderID: String, CaseIterable, Codable, Hashable, Identifiable {
     case gemini
     case grok
     case deepSeek = "deepseek"
+    case github
 
     var id: String { rawValue }
 
@@ -27,6 +28,13 @@ struct AIProvider: Identifiable, Hashable {
 
     var storageNamespace: String {
         id.rawValue
+    }
+
+    // GitHub reuses the same isolated WebView/profile machinery as the AI tabs,
+    // but it is a browser service rather than a conversation provider. Keep that
+    // distinction explicit so Memory handoff/capture code can fail closed.
+    var supportsConversationContext: Bool {
+        id != .github
     }
 
     func allowsHost(_ host: String) -> Bool {
@@ -181,6 +189,37 @@ struct AIProvider: Identifiable, Hashable {
             persistentCookieHostSuffixes: ["deepseek.com"],
             authenticatedHostSuffixes: ["chat.deepseek.com"],
             unauthenticatedPathPrefixes: ["/sign_in", "/signin", "/login", "/auth"]
+        ),
+        .github: AIProvider(
+            id: .github,
+            displayName: "GitHub",
+            systemImage: "chevron.left.forwardslash.chevron.right",
+            startURL: URL(string: "https://github.com/")!,
+            loginURL: URL(string: "https://github.com/login")!,
+            allowedHostSuffixes: [
+                "github.com",
+                "github.dev",
+                "githubassets.com",
+                "githubusercontent.com",
+                "google.com",
+                "gstatic.com",
+                "googleusercontent.com",
+                "apple.com",
+                "icloud.com",
+                "microsoft.com",
+                "microsoftonline.com",
+                "live.com",
+                "msauth.net"
+            ],
+            persistentCookieHostSuffixes: ["github.com"],
+            authenticatedHostSuffixes: ["github.com"],
+            unauthenticatedPathPrefixes: [
+                "/login",
+                "/session",
+                "/signup",
+                "/join",
+                "/password_reset"
+            ]
         )
     ]
 }

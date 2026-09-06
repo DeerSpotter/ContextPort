@@ -18,6 +18,7 @@ final class AIProviderManager: ObservableObject {
     private static let activeProviderKey = "MultiAIActiveProviderID"
     private static let enabledProvidersKey = "MultiAIEnabledProviderIDs"
     private static let deepSeekProviderMigrationKey = "MultiAIDeepSeekProviderMigrationV1"
+    private static let githubProviderMigrationKey = "MultiAIGitHubProviderMigrationV1"
 
     init() {
         let defaults = UserDefaults.standard
@@ -31,6 +32,15 @@ final class AIProviderManager: ObservableObject {
                 enabledIDs.insert(.deepSeek)
             }
             defaults.set(true, forKey: Self.deepSeekProviderMigrationKey)
+            defaults.set(enabledIDs.map(\.rawValue).sorted(), forKey: Self.enabledProvidersKey)
+        }
+
+        // GitHub did not exist in any earlier enabled-provider preference, so it
+        // cannot represent a user-disabled choice yet. Enable it exactly once for
+        // upgraded installs while leaving every existing provider choice intact.
+        if !defaults.bool(forKey: Self.githubProviderMigrationKey) {
+            enabledIDs.insert(.github)
+            defaults.set(true, forKey: Self.githubProviderMigrationKey)
             defaults.set(enabledIDs.map(\.rawValue).sorted(), forKey: Self.enabledProvidersKey)
         }
 
@@ -55,6 +65,10 @@ final class AIProviderManager: ObservableObject {
 
     var providers: [AIProvider] {
         AIProvider.all.filter { enabledProviderIDs.contains($0.id) }
+    }
+
+    var conversationProviders: [AIProvider] {
+        providers.filter(\.supportsConversationContext)
     }
 
     func isProviderEnabled(_ providerID: AIProviderID) -> Bool {
