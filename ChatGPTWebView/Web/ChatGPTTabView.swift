@@ -34,64 +34,77 @@ struct AIChatTabView: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
             if !isKeyboardVisible {
-                HStack(spacing: 4) {
-                    Button {
-                        if let pendingPasteContextText {
+                Menu {
+                    if let pendingPasteContextText {
+                        Button {
                             pastePendingContext(pendingPasteContextText)
-                        } else if !pendingAttachFileURLs.isEmpty {
+                        } label: {
+                            Label(
+                                isPastingContext ? "Pasting Context..." : "Paste Context",
+                                systemImage: "doc.on.clipboard"
+                            )
+                        }
+                        .disabled(isPastingContext)
+                    }
+
+                    if !pendingAttachFileURLs.isEmpty {
+                        Button {
                             attachPendingFiles(pendingAttachFileURLs)
-                        } else {
-                            presentSaveContextChoices()
+                        } label: {
+                            Label(
+                                isAttachingFiles ? "Attaching Files..." : "Attach Files",
+                                systemImage: "paperclip"
+                            )
                         }
-                    } label: {
-                        Text(contextButtonTitle)
-                            .font(.caption2.weight(.semibold))
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
+                        .disabled(isAttachingFiles)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .disabled(isSavingContext || isPastingContext || isAttachingFiles)
 
-                    Menu {
-                        Button {
-                            hardRefreshCurrentSession()
-                        } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(isHardRefreshing)
-
-                        Button {
-                            webViewStore.stopCurrentActivity()
-                            appModel.statusMessage = "Stopped current \(provider.displayName) activity."
-                        } label: {
-                            Label("Stop", systemImage: "stop.circle")
-                        }
-
-                        Button {
-                            webViewStore.scrollCurrentConversationToBottom()
-                            appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
-                        } label: {
-                            Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
-                        }
+                    Button {
+                        presentSaveContextChoices()
                     } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 30, height: 30)
+                        Label(
+                            isSavingContext ? "Saving Context..." : "Save Context",
+                            systemImage: "tray.and.arrow.down"
+                        )
                     }
-                    .buttonStyle(.plain)
-                    .foregroundColor(isHardRefreshing ? .red : .primary)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                    .accessibilityLabel("Page controls")
-                    .accessibilityHint("Opens refresh, stop, and scroll to bottom actions")
+                    .disabled(isSavingContext)
+
+                    Divider()
+
+                    Button {
+                        hardRefreshCurrentSession()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isHardRefreshing)
+
+                    Button {
+                        webViewStore.stopCurrentActivity()
+                        appModel.statusMessage = "Stopped current \(provider.displayName) activity."
+                    } label: {
+                        Label("Stop", systemImage: "stop.circle")
+                    }
+
+                    Button {
+                        webViewStore.scrollCurrentConversationToBottom()
+                        appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
+                    } label: {
+                        Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.accentColor)
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .frame(width: 34, height: 34)
+                    .shadow(radius: 2)
                 }
-                .padding(4)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(Color.primary.opacity(0.10), lineWidth: 1))
-                .shadow(radius: 2)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Chat actions")
+                .accessibilityHint("Opens Save Context, pending attachments, refresh, stop, and scroll actions")
                 .padding(.top, 8)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -198,14 +211,6 @@ struct AIChatTabView: View {
         return sourceMemoryIDs.compactMap { id in
             appModel.localMemoryEntries.first(where: { $0.id == id })
         }
-    }
-
-    private var contextButtonTitle: String {
-        if isPastingContext { return "Pasting" }
-        if isAttachingFiles { return "Attaching" }
-        if pendingPasteContextText != nil { return "Paste Context" }
-        if !pendingAttachFileURLs.isEmpty { return "Attach Files" }
-        return isSavingContext ? "Saving" : "Save Context"
     }
 
     private func setTypingPriority(_ isTyping: Bool) {
