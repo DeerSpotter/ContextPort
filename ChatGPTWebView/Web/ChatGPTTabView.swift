@@ -7,6 +7,7 @@ struct AIChatTabView: View {
     @EnvironmentObject private var profileManager: ChatGPTProfileManager
     @EnvironmentObject private var sessionPool: ChatGPTProfileSessionPool
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject var actionBridge: ChatActionBridge
     @State private var isSavingContext = false
     @State private var isPastingContext = false
     @State private var isAttachingFiles = false
@@ -27,156 +28,88 @@ struct AIChatTabView: View {
     @State private var lastProfileID = ChatGPTProfile.primaryID
 
     var body: some View {
-        ZStack(alignment: .top) {
-            SecureChatGPTWebView(store: webViewStore)
-                .id(activeSessionID)
-                .ignoresSafeArea(.container, edges: .bottom)
-                .ignoresSafeArea(.keyboard, edges: .bottom)
-
-            if !isKeyboardVisible {
-                Menu {
-                    if let pendingPasteContextText {
-                        Button {
-                            pastePendingContext(pendingPasteContextText)
-                        } label: {
-                            Label(
-                                isPastingContext ? "Pasting Context..." : "Paste Context",
-                                systemImage: "doc.on.clipboard"
-                            )
-                        }
-                        .disabled(isPastingContext)
-                    }
-
-                    if !pendingAttachFileURLs.isEmpty {
-                        Button {
-                            attachPendingFiles(pendingAttachFileURLs)
-                        } label: {
-                            Label(
-                                isAttachingFiles ? "Attaching Files..." : "Attach Files",
-                                systemImage: "paperclip"
-                            )
-                        }
-                        .disabled(isAttachingFiles)
-                    }
-
-                    Button {
-                        presentSaveContextChoices()
-                    } label: {
-                        Label(
-                            isSavingContext ? "Saving Context..." : "Save Context",
-                            systemImage: "tray.and.arrow.down"
-                        )
-                    }
-                    .disabled(isSavingContext)
-
-                    Divider()
-
-                    Button {
-                        hardRefreshCurrentSession()
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(isHardRefreshing)
-
-                    Button {
-                        webViewStore.stopCurrentActivity()
-                        appModel.statusMessage = "Stopped current \(provider.displayName) activity."
-                    } label: {
-                        Label("Stop", systemImage: "stop.circle")
-                    }
-
-                    Button {
-                        webViewStore.scrollCurrentConversationToBottom()
-                        appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
-                    } label: {
-                        Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
-                    }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(Color.accentColor)
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .frame(width: 34, height: 34)
-                    .shadow(radius: 2)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Chat actions")
-                .accessibilityHint("Opens Save Context, pending attachments, refresh, stop, and scroll actions")
-                .padding(.top, 8)
-                .frame(maxWidth: .infinity, alignment: .center)
+        SecureChatGPTWebView(store: webViewStore)
+            .id(activeSessionID)
+            .ignoresSafeArea(.container, edges: .bottom)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .onAppear {
+                lastProviderID = provider.id
+                lastProfileID = activeProfile.id
+                handleActiveSessionAppearance()
+                handlePendingMemoryStart()
+                syncRibbonReadiness()
             }
-        }
-        .onAppear {
-            lastProviderID = provider.id
-            lastProfileID = activeProfile.id
-            handleActiveSessionAppearance()
-            handlePendingMemoryStart()
-        }
-        .onChange(of: activeSessionID) { _ in
-            let previousProviderID = lastProviderID
-            let previousProfileID = lastProfileID
-            lastProviderID = provider.id
-            lastProfileID = activeProfile.id
-            handleSessionChange(
-                fromProviderID: previousProviderID,
-                previousProfileID: previousProfileID
-            )
-        }
-        .onChange(of: appModel.openChatGPTTabRequestID) { _ in
-            handlePendingMemoryStart()
-        }
-        .onChange(of: scenePhase) { newPhase in
-            guard newPhase == .inactive || newPhase == .background else { return }
-            persistAllLiveProfileSessions()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            setTypingPriority(true)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            setTypingPriority(false)
-        }
-        .confirmationDialog(
-            "Save Context",
-            isPresented: $isShowingSaveContextOptions,
-            titleVisibility: .visible
-        ) {
-            ForEach(sourceMemoryEntries) { entry in
-                Button("Add Revision to \"\(entry.title)\"") {
+            .onChange(of: activeSessionID) { _ in
+                let previousProviderID = lastProviderID
+                let previousProfileID = lastProfileID
+                lastProviderID = provider.id
+                lastProfileID = activeProfile.id
+                handleSessionChange(
+                    fromProviderID: previousProviderID,
+                    previousProfileID: previousProfileID
+                )
+            }
+            .onChange(of: appModel.openChatGPTTabRequestID) { _ in
+                handlePendingMemoryStart()
+            }
+            .onChange(of: actionBridge.actionRequestID) { _ in
+                handleRibbonActionRequest()
+            }
+            .onChange(of: pendingPasteContextText) { _ in
+                syncRibbonReadiness()
+            }
+            .onChange(of: pendingAttachFileURLs) { _ in
+                syncRibbonReadiness()
+            }
+            .onChange(of: scenePhase) { newPhase in
+                guard newPhase == .inactive || newPhase == .background else { return }
+                persistAllLiveProfileSessions()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                setTypingPriority(true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                setTypingPriority(false)
+            }
+            .confirmationDialog(
+                "Save Context",
+                isPresented: $isShowingSaveContextOptions,
+                titleVisibility: .visible
+            ) {
+                ForEach(sourceMemoryEntries) { entry in
+                    Button("Add Revision to \"\(entry.title)\"") {
+                        saveCurrentChatAsRevision(to: entry)
+                    }
+                }
+
+                if !appModel.localMemoryEntries.isEmpty {
+                    Button("Choose Existing Memory") {
+                        isShowingMemoryRevisionPicker = true
+                    }
+                }
+
+                Button("Save as New Memory") {
+                    prepareNewMemorySave()
+                }
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Add this full chat as a new revision of an existing Memory, or create a new Memory.")
+            }
+            .sheet(isPresented: $isShowingMemoryRevisionPicker) {
+                MemoryRevisionDestinationPicker(entries: appModel.localMemoryEntries) { entry in
+                    isShowingMemoryRevisionPicker = false
                     saveCurrentChatAsRevision(to: entry)
                 }
             }
-
-            if !appModel.localMemoryEntries.isEmpty {
-                Button("Choose Existing Memory") {
-                    isShowingMemoryRevisionPicker = true
-                }
+            .sheet(isPresented: $isShowingNewMemoryNameEditor) {
+                NewMemoryNameEditor(
+                    detectedChatName: detectedNewMemoryName,
+                    memoryName: $pendingNewMemoryName,
+                    onSave: savePendingNewMemory,
+                    onCancel: cancelPendingNewMemorySave
+                )
             }
-
-            Button("Save as New Memory") {
-                prepareNewMemorySave()
-            }
-
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Add this full chat as a new revision of an existing Memory, or create a new Memory.")
-        }
-        .sheet(isPresented: $isShowingMemoryRevisionPicker) {
-            MemoryRevisionDestinationPicker(entries: appModel.localMemoryEntries) { entry in
-                isShowingMemoryRevisionPicker = false
-                saveCurrentChatAsRevision(to: entry)
-            }
-        }
-        .sheet(isPresented: $isShowingNewMemoryNameEditor) {
-            NewMemoryNameEditor(
-                detectedChatName: detectedNewMemoryName,
-                memoryName: $pendingNewMemoryName,
-                onSave: savePendingNewMemory,
-                onCancel: cancelPendingNewMemorySave
-            )
-        }
     }
 
     private var provider: AIProvider {
@@ -210,6 +143,42 @@ struct AIChatTabView: View {
         guard sourceMemorySessionID == activeSessionID else { return [] }
         return sourceMemoryIDs.compactMap { id in
             appModel.localMemoryEntries.first(where: { $0.id == id })
+        }
+    }
+
+    private func syncRibbonReadiness() {
+        actionBridge.updatePendingState(
+            pasteContext: pendingPasteContextText != nil,
+            attachments: !pendingAttachFileURLs.isEmpty
+        )
+    }
+
+    private func handleRibbonActionRequest() {
+        guard let action = actionBridge.requestedAction else { return }
+
+        switch action {
+        case .saveContext:
+            presentSaveContextChoices()
+        case .pasteContext:
+            guard let pendingPasteContextText else {
+                appModel.statusMessage = "No saved context is waiting to be pasted."
+                return
+            }
+            pastePendingContext(pendingPasteContextText)
+        case .attachFiles:
+            guard !pendingAttachFileURLs.isEmpty else {
+                appModel.statusMessage = "No Memory attachments are waiting."
+                return
+            }
+            attachPendingFiles(pendingAttachFileURLs)
+        case .refresh:
+            hardRefreshCurrentSession()
+        case .stop:
+            webViewStore.stopCurrentActivity()
+            appModel.statusMessage = "Stopped current \(provider.displayName) activity."
+        case .scrollToBottom:
+            webViewStore.scrollCurrentConversationToBottom()
+            appModel.statusMessage = "Scrolled \(provider.displayName) to the bottom."
         }
     }
 
@@ -299,15 +268,15 @@ struct AIChatTabView: View {
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextID = UUID()
             if payload.fileURLs.isEmpty {
-                appModel.statusMessage = "Saved Markdown is ready for \(destination). Tap Paste Context to insert it, or continue without it."
+                appModel.statusMessage = "Saved Markdown is ready for \(destination). Tap the pulsing ribbon button to paste it, or continue without it."
             } else {
-                appModel.statusMessage = "Saved Markdown and \(payload.fileURLs.count) Memory attachment\(payload.fileURLs.count == 1 ? "" : "s") are ready for \(destination). Tap Paste Context first, then Attach Files."
+                appModel.statusMessage = "Saved Markdown and \(payload.fileURLs.count) Memory attachment\(payload.fileURLs.count == 1 ? "" : "s") are ready for \(destination). Tap the pulsing ribbon button to paste the context first, then tap it again to attach the files."
             }
             watchForConversationStartWithoutPaste(pendingPasteContextID)
         } else if !payload.fileURLs.isEmpty {
             pendingAttachFileURLs = payload.fileURLs
             pendingPasteContextText = nil
-            appModel.statusMessage = "Files are ready. Tap Attach Files to attach from app Memory to \(destination)."
+            appModel.statusMessage = "Files are ready. Tap the pulsing ribbon button to attach them to \(destination)."
         }
     }
 
@@ -324,10 +293,10 @@ struct AIChatTabView: View {
                 if pendingAttachFileURLs.isEmpty {
                     appModel.statusMessage = "Pasted saved context into \(provider.displayName). Review and send."
                 } else {
-                    appModel.statusMessage = "Pasted saved context into \(provider.displayName). Tap Attach Files to add the remaining Memory attachment\(pendingAttachFileURLs.count == 1 ? "" : "s")."
+                    appModel.statusMessage = "Pasted saved context into \(provider.displayName). Tap the pulsing ribbon button again to attach the remaining Memory attachment\(pendingAttachFileURLs.count == 1 ? "" : "s")."
                 }
             } else {
-                appModel.statusMessage = "Could not paste yet. Wait for \(provider.displayName) to finish loading, then tap Paste Context again."
+                appModel.statusMessage = "Could not paste yet. Wait for \(provider.displayName) to finish loading, then tap the pulsing ribbon button again."
             }
         }
     }
@@ -335,14 +304,11 @@ struct AIChatTabView: View {
     private func attachPendingFiles(_ urls: [URL]) {
         guard !isAttachingFiles, !urls.isEmpty else { return }
 
-        // Attach Files is a one-pass temporary action. Clear its UI state immediately
-        // when pressed so the primary control returns to Save Context regardless of
-        // provider-specific upload acknowledgement behavior.
         isAttachingFiles = true
         pendingAttachFileURLs = []
         webViewStore.preparePendingUploadURLs(urls)
         isAttachingFiles = false
-        appModel.statusMessage = "Attachment handoff started for \(provider.displayName). Save Context is available again."
+        appModel.statusMessage = "Attachment handoff started for \(provider.displayName)."
 
         Task { @MainActor in
             let handoff = await webViewStore.injectFilesIntoChatGPTUpload(urls)
@@ -352,7 +318,7 @@ struct AIChatTabView: View {
                 appModel.statusMessage = "Context bundle handoff completed for \(provider.displayName). Review the attached context before sending."
             } else {
                 let attemptedCount = urls.count
-                appModel.statusMessage = "Attempted \(attemptedCount) Memory attachment\(attemptedCount == 1 ? "" : "s") for \(provider.displayName). Save Context is available."
+                appModel.statusMessage = "Attempted \(attemptedCount) Memory attachment\(attemptedCount == 1 ? "" : "s") for \(provider.displayName)."
             }
         }
     }
@@ -384,9 +350,9 @@ struct AIChatTabView: View {
                     pendingPasteContextText = nil
                     pendingPasteContextID = UUID()
                     if pendingAttachFileURLs.isEmpty {
-                        appModel.statusMessage = "Continuing without pasted Memory context. Save Context is available again."
+                        appModel.statusMessage = "Continuing without pasted Memory context."
                     } else {
-                        appModel.statusMessage = "Continuing without pasted Memory text. Tap Attach Files to add the remaining Memory attachment\(pendingAttachFileURLs.count == 1 ? "" : "s")."
+                        appModel.statusMessage = "Continuing without pasted Memory text. Tap the pulsing ribbon button to add the remaining Memory attachment\(pendingAttachFileURLs.count == 1 ? "" : "s")."
                     }
                     return
                 }
@@ -504,7 +470,6 @@ struct AIChatTabView: View {
 }
 
 typealias ChatGPTTabView = AIChatTabView
-
 
 private struct NewMemoryNameEditor: View {
     @Environment(\.dismiss) private var dismiss
