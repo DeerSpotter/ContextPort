@@ -1,5 +1,45 @@
 import SwiftUI
 
+enum ChatRibbonAction {
+    case saveContext
+    case pasteContext
+    case attachFiles
+    case refresh
+    case stop
+    case scrollToBottom
+}
+
+final class ChatActionBridge: ObservableObject {
+    @Published private(set) var hasPendingPasteContext = false
+    @Published private(set) var hasPendingAttachments = false
+    @Published private(set) var actionRequestID = UUID()
+    private(set) var requestedAction: ChatRibbonAction?
+
+    var hasReadyHandoff: Bool {
+        hasPendingPasteContext || hasPendingAttachments
+    }
+
+    var nextReadyAction: ChatRibbonAction? {
+        if hasPendingPasteContext {
+            return .pasteContext
+        }
+        if hasPendingAttachments {
+            return .attachFiles
+        }
+        return nil
+    }
+
+    func updatePendingState(pasteContext: Bool, attachments: Bool) {
+        hasPendingPasteContext = pasteContext
+        hasPendingAttachments = attachments
+    }
+
+    func request(_ action: ChatRibbonAction) {
+        requestedAction = action
+        actionRequestID = UUID()
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var updateChecker: AppUpdateChecker
@@ -8,6 +48,7 @@ struct RootView: View {
     @EnvironmentObject private var profileSessionPool: ChatGPTProfileSessionPool
     @Environment(\.openURL) private var openURL
     @AppStorage("developerModeEnabled") private var developerModeEnabled = false
+    @StateObject private var chatActions = ChatActionBridge()
     @State private var selectedTab: AppTab = .assistant
     @State private var isShowingProfiles = false
     @State private var isShowingSettings = false
@@ -15,7 +56,7 @@ struct RootView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             ZStack {
-                AIChatTabView()
+                AIChatTabView(actionBridge: chatActions)
                     .opacity(selectedTab == .assistant ? 1 : 0)
                     .allowsHitTesting(selectedTab == .assistant)
                     .accessibilityHidden(selectedTab != .assistant)
@@ -77,6 +118,7 @@ struct RootView: View {
                 selectedTab: $selectedTab,
                 provider: providerManager.activeProvider,
                 developerModeEnabled: developerModeEnabled,
+                actionBridge: chatActions,
                 onProfiles: {
                     isShowingProfiles.toggle()
                 },
@@ -137,6 +179,7 @@ private struct CompactBottomSwitcher: View {
     @Binding var selectedTab: AppTab
     let provider: AIProvider
     let developerModeEnabled: Bool
+    @ObservedObject var actionBridge: ChatActionBridge
     let onProfiles: () -> Void
     let onSettings: () -> Void
 
@@ -157,6 +200,8 @@ private struct CompactBottomSwitcher: View {
             ) {
                 selectedTab = .memory
             }
+
+            ChatActionRibbonControl(bridge: actionBridge)
 
             if developerModeEnabled {
                 CompactTabButton(
@@ -190,6 +235,109 @@ private struct CompactBottomSwitcher: View {
         .frame(maxWidth: .infinity)
         .background(.ultraThinMaterial)
         .overlay(Rectangle().fill(Color.secondary.opacity(0.16)).frame(height: 0.5), alignment: .top)
+    }
+}
+
+private struct ChatActionRibbonControl: View {
+    @ObservedObject var bridge: ChatActionBridge
+    @State private var pulse = false
+
+    var body: some View {
+        Group {
+            if bridge.hasReadyHandoff {
+                Button {
+                    if let action = bridge.nextReadyAction {
+                        bridge.request(action)
+                    }
+                } label: {
+                    actionCircle(isReady: true)
+                }
+                .accessibilityLabel(readyAccessibilityLabel)
+                .accessibilityHint("Runs the waiting chat handoff")
+            } else {
+                Menu {
+                    Button {
+                        bridge.request(.saveContext)
+                    } label: {
+                        Label("Save Context", systemImage: "tray.and.arrow.down")
+                    }
+
+                    Button {
+                        bridge.request(.refresh)
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+
+                    Divider()
+
+                    Button {
+                        bridge.request(.stop)
+                    } label: {
+                        Label("Stop", systemImage: "stop.circle")
+                    }
+
+                    Button {
+                        bridge.request(.scrollToBottom)
+                    } label: {
+                        Label("Scroll to Bottom", systemImage: "arrow.down.to.line")
+                    }
+                } label: {
+                    actionCircle(isReady: false)
+                }
+                .accessibilityLabel("Chat actions")
+                .accessibilityHint("Opens Save Context, refresh, stop, and scroll actions")
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .frame(height: 32)
+        .onAppear {
+            updatePulse(bridge.hasReadyHandoff)
+        }
+        .onChange(of: bridge.hasReadyHandoff) { isReady in
+            updatePulse(isReady)
+        }
+    }
+
+    private var readyAccessibilityLabel: String {
+        bridge.hasPendingPasteContext ? "Paste context ready" : "Attachments ready"
+    }
+
+    private func updatePulse(_ isReady: Bool) {
+        pulse = false
+        guard isReady else { return }
+        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+            pulse = true
+        }
+    }
+
+    private func actionCircle(isReady: Bool) -> some View {
+        ZStack {
+            if isReady {
+                Circle()
+                    .stroke(Color.red.opacity(0.55), lineWidth: 2)
+                    .frame(width: 26, height: 26)
+                    .scaleEffect(pulse ? 1.34 : 1.02)
+                    .opacity(pulse ? 0.12 : 0.72)
+            }
+
+            Circle()
+                .fill(isReady ? Color.red : Color.accentColor)
+                .frame(width: 26, height: 26)
+
+            Image(systemName: readySystemImage(isReady: isReady))
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.white)
+        }
+        .scaleEffect(isReady && pulse ? 1.08 : 0.98)
+        .frame(maxWidth: .infinity)
+        .frame(height: 32)
+        .contentShape(Rectangle())
+    }
+
+    private func readySystemImage(isReady: Bool) -> String {
+        guard isReady else { return "ellipsis" }
+        return bridge.hasPendingPasteContext ? "doc.on.clipboard" : "paperclip"
     }
 }
 
